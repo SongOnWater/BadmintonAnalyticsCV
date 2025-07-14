@@ -38,12 +38,19 @@ if __name__ == '__main__':
     if remainder >= 1:
         num_clips += 1
 
-    # print(num_clips)
+    print(f"Total video length: {total_length:.2f} seconds")
+    print(f"Processing video in {num_clips} segments (each {clip_duration} seconds)")
+    
     pred_dict_joined = {'Frame':[], 'X':[], 'Y':[], 'Visibility':[]}
 
     for i in range(num_clips):
+        print(f"\nProcessing segment {i+1}/{num_clips}...")
+        
         if (i != num_clips-1):
-            clip = vfc.subclip(i * clip_duration, (i+1) * clip_duration)
+            start_time = i * clip_duration
+            end_time = (i+1) * clip_duration
+            print(f"  Segment time: {start_time:.1f}s to {end_time:.1f}s")
+            clip = vfc.subclip(start_time, end_time)
             clip.write_videofile("temp_clip.mp4")
             cap = cv2.VideoCapture("temp_clip.mp4")
 
@@ -51,12 +58,16 @@ if __name__ == '__main__':
             pred_dict = pred_main(frame_list=frame_list, fps=fps, w=w, h=h)
         
         else:
-            clip = vfc.subclip(i * clip_duration, total_length)
+            start_time = i * clip_duration
+            end_time = total_length
+            print(f"  Segment time: {start_time:.1f}s to {end_time:.1f}s (last segment)")
+            clip = vfc.subclip(start_time, end_time)
             clip.write_videofile("temp_clip.mp4")
             cap = cv2.VideoCapture("temp_clip.mp4")
             frame_list, fps, (w,h) = generate_frames_from_cap(cap)
             pred_dict = pred_main(frame_list=frame_list, fps=fps, w=w, h=h)
 
+        print(f"  Processed {len(pred_dict['Frame'])} frames in this segment")
         
         for k in range(len(pred_dict['Frame'])):
             pred_dict['Frame'][k] += i*30*clip_duration
@@ -79,3 +90,5 @@ if __name__ == '__main__':
         pickle.dump(pred_dict_joined, file)
         pickle.dump(out_video_file, file)
         pickle.dump(args.video_file, file)
+    
+    print("\nVideo processing completed successfully!")

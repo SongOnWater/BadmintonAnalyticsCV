@@ -76,52 +76,81 @@ def testing():
 
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # Codec for MP4 format
     temp_output_path = f"{out_file[:-4]}_score_clip.mp4"
-    out = cv2.VideoWriter(temp_output_path, fourcc, 30, (frame_width, frame_height))
+    out = None
+    
+    try:
+        print(f"Creating output video at: {temp_output_path}")
+        print(f"Video dimensions: {frame_width}x{frame_height}")
+        
+        # Create VideoWriter with proper parameters
+        out = cv2.VideoWriter(temp_output_path, fourcc, 30, (frame_width, frame_height))
+        
+        if not out.isOpened():
+            raise Exception(f"Could not open VideoWriter for {temp_output_path}")
+            
+        print("VideoWriter opened successfully")
+        print("active frame is ", active_frame)
+        print(f"Total frames to process: {len(frame_list)}")
 
-    print("active frame is ",active_frame)
+        # Process each frame
+        for i, frame in enumerate(frame_list):
+            if i % 100 == 0:
+                print(f"Processing frame {i}/{len(frame_list)}")
+                
+            if(i in active_frame):
+                scores = clip_start(frame_in_csv[active_frame.index(i)], i, save_file, scores, pointers_to_players, first_serve)
+                print("scores", scores)
+                if(set_scores["p1"]==1 and set_scores["p2"]==1):
+                    if(scores["p1"]==11 or scores["p2"]==11):
+                        pointers_to_players["closer"], pointers_to_players["farther"] = pointers_to_players["farther"], pointers_to_players["closer"]
 
-
-
-    for i, frame in enumerate(frame_list):
-        if(i in active_frame):
-            scores = clip_start(frame_in_csv[active_frame.index(i)], i, save_file, scores, pointers_to_players, first_serve)
-            # i2+=1
-            print("scores", scores)
-            if(set_scores["p1"]==1 and set_scores["p2"]==1):
-                if(scores["p1"]==11 or scores["p2"]==11):
+                if(scores["p1"]==21 or scores["p2"]==21):
+                    if(scores["p1"]==21):
+                        set_scores["p1"]+=1
+                    else:
+                        set_scores["p2"]+=1
+                    scores = {"p1" : 0, "p2" : 0}
+                    first_serve = True
                     pointers_to_players["closer"], pointers_to_players["farther"] = pointers_to_players["farther"], pointers_to_players["closer"]
+                first_serve = False 
 
-            if(scores["p1"]==21 or scores["p2"]==21):
-                if(scores["p1"]==21):
-                    set_scores["p1"]+=1
-                else:
-                    set_scores["p2"]+=1
-                scores = {"p1" : 0, "p2" : 0}
-                first_serve = True
-                pointers_to_players["closer"], pointers_to_players["farther"] = pointers_to_players["farther"], pointers_to_players["closer"]
-            first_serve = False 
+            # Ensure frame is valid
+            if frame is None or frame.size == 0:
+                print(f"Warning: Invalid frame at index {i}, skipping")
+                continue
 
-        score_text_p1 = f"Player 1: {scores['p1']}"
-        score_text_p2 = f"Player 2: {scores['p2']}"
-        text_size, _ = cv2.getTextSize(score_text_p1, cv2.FONT_HERSHEY_SIMPLEX, 1, 2)
-        text_width = text_size[0]
-        text_height = text_size[1]
+            score_text_p1 = f"Player 1: {scores['p1']}"
+            score_text_p2 = f"Player 2: {scores['p2']}"
+            text_size, _ = cv2.getTextSize(score_text_p1, cv2.FONT_HERSHEY_SIMPLEX, 1, 2)
+            text_width = text_size[0]
+            text_height = text_size[1]
 
-        # Position to place the text (top right corner with padding)
-        padding = 10
-        top_right_p1 = (frame.shape[1] - text_width - padding, text_height + padding)
-        top_right_p2 = (frame.shape[1] - text_width - padding, 2 * text_height + 2 * padding)
+            # Position to place the text (top right corner with padding)
+            padding = 10
+            top_right_p1 = (frame.shape[1] - text_width - padding, text_height + padding)
+            top_right_p2 = (frame.shape[1] - text_width - padding, 2 * text_height + 2 * padding)
 
-        # Draw Player 1 score in red color
-        cv2.putText(frame, score_text_p1, top_right_p1, cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
+            # Draw Player 1 score in red color
+            cv2.putText(frame, score_text_p1, top_right_p1, cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
 
-        # Draw Player 2 score in red color below Player 1 score
-        cv2.putText(frame, score_text_p2, top_right_p2, cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
+            # Draw Player 2 score in red color below Player 1 score
+            cv2.putText(frame, score_text_p2, top_right_p2, cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
 
-        # Write the modified frame to the temporary output video file
-        out.write(frame)
-
-    out.release()
+            # Write the modified frame to the output video file
+            out.write(frame)
+            
+        print(f"Finished processing all {len(frame_list)} frames")
+        
+    except Exception as e:
+        print(f"Error during video processing: {str(e)}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        # Ensure VideoWriter is properly released
+        if out is not None:
+            print("Releasing VideoWriter...")
+            out.release()
+            print(f"VideoWriter released. Output file: {temp_output_path}")
 
 
     print("Done")

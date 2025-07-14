@@ -125,7 +125,22 @@ def clip_start(frame_in_csv, frame_in_mp4, path_to_mp4, scores, pointers_to_play
 
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         
-        boxes = get_bounding_boxes(frame_rgb, img_height=img_height, img_width=img_width)
+        try:
+            # Convert frame to numpy array if it's PIL Image
+            if hasattr(frame_rgb, 'size'):  # Check if it's PIL Image
+                frame_np = np.array(frame_rgb)
+            else:
+                frame_np = frame_rgb
+            
+            # Ensure frame is in correct format for YOLO
+            if len(frame_np.shape) == 3 and frame_np.shape[2] == 3:
+                boxes = get_bounding_boxes(frame_np, img_height=img_height, img_width=img_width)
+            else:
+                print(f"Invalid frame format at frame {i}, skipping detection")
+                return scores
+        except Exception as e:
+            print(f"Error in object detection at frame {i}: {str(e)}")
+            return scores
         try:
             frame, p1_side= visualize_boxes_xywh(mid_line_coord, frame_in_mp4, boxes, img_width, img_height)
         except:

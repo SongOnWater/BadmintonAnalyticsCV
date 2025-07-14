@@ -7,7 +7,8 @@ from PIL import Image, ImageDraw
 def return_middle_line(video_path):
     #logging.basicConfig(level=logging.WARNING)
     # Initialize YOLO model
-    model = YOLO("E:/Combined-files/Combined-files/best_ullas.pt")
+    # Using standard YOLOv8 nano model as replacement
+    model = YOLO("/workspace/BadmintonAnalyticsCV/ckpts/yolov8n.pt")
     # Open the video file
     video = cv2.VideoCapture(video_path)
     
@@ -24,12 +25,16 @@ def return_middle_line(video_path):
             return None
         # print("mid1.5 ", ret)
                 
-        # Convert frame from BGR to RGB (OpenCV format to PIL format)
+        # Convert frame from BGR to RGB and to PIL Image
         image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        pil_image = Image.fromarray(image)
 
         # Predict bounding boxes using YOLO
-        # print("mid1.75")
-        results = model.predict(image)
+        try:
+            results = model.predict(source=pil_image, verbose=False)
+        except Exception as e:
+            print(f"Error in YOLO prediction: {str(e)}")
+            return None
         # print("mid2")
         # Calculate middle line x-coordinate
         middle_line_x = 0.0
