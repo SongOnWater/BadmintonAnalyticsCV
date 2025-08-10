@@ -16,39 +16,30 @@ from moviepy.editor import VideoFileClip, concatenate_videoclips
 import pickle
 
 def change_fps(video_file):
-    cap = cv2.VideoCapture(video_file)
-
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fps = 30.0
-
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(video_file, fourcc, fps, (width, height))
-
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        out.write(frame)
-
-    cap.release()
-    out.release()
-    cv2.destroyAllWindows()
-
-    list_mod = []
-    list_og = []
-    
+    """Convert video to 30 FPS and save to a temporary file to avoid corruption."""
     try:
+        # Use MoviePy for more reliable FPS conversion
         clip = VideoFileClip(video_file)
-        if clip.reader.nframes > 0:
-            list_mod.append(clip)
+        
+        # If already 30 FPS, no need to convert
+        if abs(clip.fps - 30.0) < 0.1:
+            clip.close()
+            return video_file
+            
+        # Create temporary filename
+        base_name, ext = os.path.splitext(video_file)
+        temp_file = f"{base_name}_30fps{ext}"
+        
+        # Write video with 30 FPS
+        clip.write_videofile(temp_file, fps=30, codec='libx264', audio=False, 
+                            temp_audiofile=None, verbose=False, logger=None)
+        clip.close()
+        
+        print(f"Converted {video_file} to 30 FPS and saved as {temp_file}")
+        return temp_file
     except Exception as e:
-        pass
-
-
-    mod_clip = concatenate_videoclips(list_mod)
-    mod_clip.write_videofile(video_file)
-
+        print(f"Error converting video to 30 FPS: {e}")
+        return video_file
 
 def predict(indices, y_pred=None, c_pred=None, img_scaler=(1, 1)):
     """ Predict coordinates from heatmap or inpainted coordinates. 
@@ -118,17 +109,21 @@ def pred_main(frame_list, fps, w, h, tracknet_file = "ckpts/TrackNet_best.pt", i
     # if not os.path.exists(save_dir):
     #     os.makedirs(save_dir)
     
+    # Check if CUDA is available and set device
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Using device: {device}")
+    
     # Load model
-    tracknet_ckpt = torch.load(tracknet_file, map_location='cpu')
+    tracknet_ckpt = torch.load(tracknet_file, map_location=device)
     tracknet_seq_len = tracknet_ckpt['param_dict']['seq_len']
     bg_mode = tracknet_ckpt['param_dict']['bg_mode']
-    tracknet = get_model('TrackNet', tracknet_seq_len, bg_mode)
+    tracknet = get_model('TrackNet', tracknet_seq_len, bg_mode).to(device)
     tracknet.load_state_dict(tracknet_ckpt['model'])
 
     if inpaintnet_file:
-        inpaintnet_ckpt = torch.load(inpaintnet_file,map_location='cpu')
+        inpaintnet_ckpt = torch.load(inpaintnet_file, map_location=device)
         inpaintnet_seq_len = inpaintnet_ckpt['param_dict']['seq_len']
-        inpaintnet = get_model('InpaintNet')
+        inpaintnet = get_model('InpaintNet').to(device)
         inpaintnet.load_state_dict(inpaintnet_ckpt['model'])
     else:
         inpaintnet = None
@@ -161,7 +156,7 @@ def pred_main(frame_list, fps, w, h, tracknet_file = "ckpts/TrackNet_best.pt", i
         data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, drop_last=False)
 
         for step, (i, x) in enumerate(tqdm(data_loader)):
-            x = x.float()
+            x = x.float().to(device)
             with torch.no_grad():
                 y_pred = tracknet(x).detach().cpu()
             
@@ -197,7 +192,7 @@ def pred_main(frame_list, fps, w, h, tracknet_file = "ckpts/TrackNet_best.pt", i
         y_pred_buffer = torch.zeros((buffer_size, seq_len, HEIGHT, WIDTH), dtype=torch.float32)
         weight = get_ensemble_weight(seq_len, eval_mode)
         for step, (i, x) in enumerate(tqdm(data_loader)):
-            x = x.float()
+            x = x.float().to(device)
             b_size, seq_len = i.shape[0], i.shape[1]
             with torch.no_grad():
                 y_pred = tracknet(x).detach().cpu()
@@ -251,7 +246,7 @@ def pred_main(frame_list, fps, w, h, tracknet_file = "ckpts/TrackNet_best.pt", i
             data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, drop_last=False)
 
             for step, (i, coor_pred, inpaint_mask) in enumerate(tqdm(data_loader)):
-                coor_pred, inpaint_mask = coor_pred.float(), inpaint_mask.float()
+                coor_pred, inpaint_mask = coor_pred.float().to(device), inpaint_mask.float().to(device)
                 with torch.no_grad():
                     coor_inpaint = inpaintnet(coor_pred, inpaint_mask).detach().cpu()
                     coor_inpaint = coor_inpaint * inpaint_mask + coor_pred * (1-inpaint_mask) # replace predicted coordinates with inpainted coordinates
@@ -279,7 +274,7 @@ def pred_main(frame_list, fps, w, h, tracknet_file = "ckpts/TrackNet_best.pt", i
             coor_inpaint_buffer = torch.zeros((buffer_size, seq_len, 2), dtype=torch.float32)
             
             for step, (i, coor_pred, inpaint_mask) in enumerate(tqdm(data_loader)):
-                coor_pred, inpaint_mask = coor_pred.float(), inpaint_mask.float()
+                coor_pred, inpaint_mask = coor_pred.float().to(device), inpaint_mask.float().to(device)
                 b_size = i.shape[0]
                 with torch.no_grad():
                     coor_inpaint = inpaintnet(coor_pred, inpaint_mask).detach().cpu()
