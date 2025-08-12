@@ -1,3 +1,4 @@
+import time
 from predict import *
 import pandas
 
@@ -53,8 +54,14 @@ if __name__ == '__main__':
     
     pred_dict_joined = {'Frame':[], 'X':[], 'Y':[], 'Visibility':[]}
 
+    # Record overall processing start time
+    overall_start_time = time.time()
+
     for i in range(num_clips):
         print(f"\nProcessing segment {i+1}/{num_clips}...")
+        
+        # Record segment start time
+        segment_start_time = time.time()
         
         if (i != num_clips-1):
             start_time = i * clip_duration
@@ -77,7 +84,11 @@ if __name__ == '__main__':
             frame_list, fps, (w,h) = generate_frames_from_cap(cap)
             pred_dict = pred_main(frame_list=frame_list, fps=fps, w=w, h=h)
 
+        # Record segment end time and calculate duration
+        segment_end_time = time.time()
+        segment_duration = segment_end_time - segment_start_time
         print(f"  Processed {len(pred_dict['Frame'])} frames in this segment")
+        print(f"  Segment processing time: {segment_duration:.2f} seconds")
         
         for k in range(len(pred_dict['Frame'])):
             pred_dict['Frame'][k] += i*30*clip_duration
@@ -88,6 +99,10 @@ if __name__ == '__main__':
         pred_dict_joined['Y'].extend(pred_dict['Y'])
 
         # print(pred_dict_joined)
+        
+    # Record overall processing end time and calculate duration
+    overall_end_time = time.time()
+    overall_duration = overall_end_time - overall_start_time
         
     pred_df = pandas.DataFrame({'Frame': pred_dict_joined['Frame'],
                                 'Visibility': pred_dict_joined['Visibility'],
@@ -115,4 +130,6 @@ if __name__ == '__main__':
     except:
         print("Could not remove temporary file: temp_clip.mp4")
     
-    print("\nVideo processing completed successfully!")
+    print(f"\nVideo processing completed successfully!")
+    print(f"Total processing time: {overall_duration:.2f} seconds")
+    print(f"Average time per segment: {overall_duration/num_clips:.2f} seconds")

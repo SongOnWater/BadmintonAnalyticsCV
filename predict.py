@@ -2,6 +2,7 @@ import os
 import argparse
 import numpy as np
 from tqdm import tqdm
+import time
 
 import torch
 from torch.utils.data import DataLoader
@@ -102,6 +103,9 @@ def predict(indices, y_pred=None, c_pred=None, img_scaler=(1, 1)):
 
 def pred_main(frame_list, fps, w, h, tracknet_file = "ckpts/TrackNet_best.pt", inpaintnet_file = None, batch_size = 1, eval_mode = "weight", output_video = True, traj_len = 8, large_video = False):
 
+    # Record start time
+    start_time = time.time()
+    
     num_workers = batch_size if batch_size <= 16 else 16
     # out_csv_file = os.path.join(save_dir, f'{video_name}_ball.csv')
     # out_video_file_cap = os.path.join(save_dir, f'{video_name}.mp4')
@@ -336,5 +340,10 @@ def pred_main(frame_list, fps, w, h, tracknet_file = "ckpts/TrackNet_best.pt", i
     #     pickle.dump(pred_dict, file)
     #     pickle.dump(out_video_file, file)
     #     pickle.dump(video_file, file)
+    
+    # Record end time and calculate duration
+    end_time = time.time()
+    processing_time = end_time - start_time
+    print(f"Model prediction completed in {processing_time:.2f} seconds")
 
     return pred_dict
