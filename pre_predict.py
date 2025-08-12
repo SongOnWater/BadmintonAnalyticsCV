@@ -1,6 +1,8 @@
 import time
 from predict import *
 import pandas
+import cv2
+import os
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -19,27 +21,32 @@ if __name__ == '__main__':
     # Handle FPS conversion if needed
     video_file_to_process = args.video_file
     cap = cv2.VideoCapture(args.video_file)
-    
-    # converting video to 30 fps if it isn't already
     try:
         fps = cap.get(cv2.CAP_PROP_FPS)
         print(f"Original video FPS: {fps}")
-    except:
+    except Exception:
         print("Error in calculating FPS")
-        fps = 30.0  # Default to 30 if we can't determine FPS
+        fps = 30.0
+    finally:
+        cap.release()
 
-    cap.release()
-
-    if abs(fps - 30.0) > 0.1: 
+    # Prefer不重编码：允许非30fps输入，模型以固定时间窗处理；如必须固定30fps再启用
+    force_convert_to_30fps = False
+    if force_convert_to_30fps and abs(fps - 30.0) > 0.1:
         print("Converting video to 30 FPS...")
         video_file_to_process = change_fps(args.video_file)
 
     
     # predicting in batches to not use too much memory
 
-    vfc = VideoFileClip(video_file_to_process)
-    clip_duration = 10
-    total_length = vfc.duration
+    # 使用 OpenCV 获取视频总时长
+    cap_info = cv2.VideoCapture(video_file_to_process)
+    fps2 = cap_info.get(cv2.CAP_PROP_FPS) or fps
+    frame_count = int(cap_info.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    total_length = frame_count / fps2 if fps2 > 0 else 0
+    cap_info.release()
+
+    clip_duration = 20  # 提高段长，减少I/O开销
     num_clips = int(total_length // clip_duration)
 
     remainder = total_length - num_clips*clip_duration
@@ -63,26 +70,32 @@ if __name__ == '__main__':
         # Record segment start time
         segment_start_time = time.time()
         
-        if (i != num_clips-1):
-            start_time = i * clip_duration
-            end_time = (i+1) * clip_duration
-            print(f"  Segment time: {start_time:.1f}s to {end_time:.1f}s")
-            clip = vfc.subclip(start_time, end_time)
-            clip.write_videofile("temp_clip.mp4", codec='libx264', audio=False)
-            cap = cv2.VideoCapture("temp_clip.mp4")
+        start_time = i * clip_duration
+        end_time = min((i+1) * clip_duration, total_length)
+        print(f"  Segment time: {start_time:.1f}s to {end_time:.1f}s" + (" (last segment)" if i==num_clips-1 else ""))
 
-            frame_list, fps, (w,h) = generate_frames_from_cap(cap)
-            pred_dict = pred_main(frame_list=frame_list, fps=fps, w=w, h=h)
-        
-        else:
-            start_time = i * clip_duration
-            end_time = total_length
-            print(f"  Segment time: {start_time:.1f}s to {end_time:.1f}s (last segment)")
-            clip = vfc.subclip(start_time, end_time)
-            clip.write_videofile("temp_clip.mp4", codec='libx264', audio=False)
-            cap = cv2.VideoCapture("temp_clip.mp4")
-            frame_list, fps, (w,h) = generate_frames_from_cap(cap)
-            pred_dict = pred_main(frame_list=frame_list, fps=fps, w=w, h=h)
+        # 无重编码：直接按时间定位读取帧
+        # 使用 MoviePy 仅定位时间边界，再用 OpenCV 按帧抓取，避免写回磁盘
+        cap = cv2.VideoCapture(video_file_to_process)
+        cap.set(cv2.CAP_PROP_POS_MSEC, start_time * 1000)
+        frame_list = []
+        grabbed = True
+        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps_cap = cap.get(cv2.CAP_PROP_FPS) or fps
+        while grabbed:
+            grabbed, frame = cap.read()
+            if not grabbed:
+                break
+            # 通过帧时间过滤到 end_time
+            msec = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
+            if msec > end_time + 1e-3:
+                break
+            frame_list.append(frame)
+        cap.release()
+
+        # 推理
+        pred_dict = pred_main(frame_list=frame_list, fps=int(round(fps_cap)), w=w, h=h)
 
         # Record segment end time and calculate duration
         segment_end_time = time.time()
@@ -90,8 +103,10 @@ if __name__ == '__main__':
         print(f"  Processed {len(pred_dict['Frame'])} frames in this segment")
         print(f"  Segment processing time: {segment_duration:.2f} seconds")
         
+        # 如果不是强制30FPS，改用原FPS进行帧号平移
+        fps_used = 30 if force_convert_to_30fps else int(round(fps))
         for k in range(len(pred_dict['Frame'])):
-            pred_dict['Frame'][k] += i*30*clip_duration
+            pred_dict['Frame'][k] += int(i * fps_used * clip_duration)
 
         pred_dict_joined['Frame'].extend(pred_dict['Frame'])
         pred_dict_joined['Visibility'].extend(pred_dict['Visibility'])
@@ -121,14 +136,8 @@ if __name__ == '__main__':
         try:
             os.remove(video_file_to_process)
             print(f"Removed temporary file: {video_file_to_process}")
-        except:
+        except Exception:
             print(f"Could not remove temporary file: {video_file_to_process}")
-    
-    try:
-        os.remove("temp_clip.mp4")
-        print("Removed temporary file: temp_clip.mp4")
-    except:
-        print("Could not remove temporary file: temp_clip.mp4")
     
     print(f"\nVideo processing completed successfully!")
     print(f"Total processing time: {overall_duration:.2f} seconds")

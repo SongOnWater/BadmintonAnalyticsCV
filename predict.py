@@ -3,15 +3,16 @@ import argparse
 import numpy as np
 from tqdm import tqdm
 import time
+import math
+import cv2
+import platform
 
 import torch
 from torch.utils.data import DataLoader
 
-from test import predict_location, get_ensemble_weight, generate_inpaint_mask
 from dataset import Shuttlecock_Trajectory_Dataset, Video_IterableDataset
 from utils.general import *
-from moviepy.video.io.VideoFileClip import VideoFileClip
-from moviepy.editor import VideoFileClip, concatenate_videoclips
+# Note: Avoid top-level MoviePy import to reduce dependency surface
 # from testing_3 import testing
 
 import pickle
@@ -19,6 +20,8 @@ import pickle
 def change_fps(video_file):
     """Convert video to 30 FPS and save to a temporary file to avoid corruption."""
     try:
+        # Lazy import MoviePy only when conversion is requested
+        from moviepy.video.io.VideoFileClip import VideoFileClip
         # Use MoviePy for more reliable FPS conversion
         clip = VideoFileClip(video_file)
         
@@ -101,36 +104,208 @@ def predict(indices, y_pred=None, c_pred=None, img_scaler=(1, 1)):
     return pred_dict    
 
 
+# ------------------------------
+# Model cache and perf settings
+# ------------------------------
+_MODEL_CACHE = {}
+
+def _get_device():
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    return device
+
+def get_models(tracknet_file, inpaintnet_file=None, device=None):
+    """Load and cache models to avoid re-loading per segment."""
+    device = device or _get_device()
+    key = (tracknet_file, inpaintnet_file or 'None', str(device))
+    if key in _MODEL_CACHE:
+        return _MODEL_CACHE[key]
+
+    tracknet_ckpt = torch.load(tracknet_file, map_location=device)
+    tracknet_seq_len = tracknet_ckpt['param_dict']['seq_len']
+    bg_mode = tracknet_ckpt['param_dict']['bg_mode']
+    tracknet = get_model('TrackNet', tracknet_seq_len, bg_mode).to(device)
+    tracknet.load_state_dict(tracknet_ckpt['model'])
+    tracknet.eval()
+
+    inpaintnet, inpaintnet_seq_len = None, None
+    if inpaintnet_file:
+        inpaintnet_ckpt = torch.load(inpaintnet_file, map_location=device)
+        inpaintnet_seq_len = inpaintnet_ckpt['param_dict']['seq_len']
+        inpaintnet = get_model('InpaintNet').to(device)
+        inpaintnet.load_state_dict(inpaintnet_ckpt['model'])
+        inpaintnet.eval()
+
+    _MODEL_CACHE[key] = {
+        'tracknet': tracknet,
+        'tracknet_seq_len': tracknet_seq_len,
+        'bg_mode': bg_mode,
+        'inpaintnet': inpaintnet,
+        'inpaintnet_seq_len': inpaintnet_seq_len,
+        'device': device,
+    }
+    return _MODEL_CACHE[key]
+
+
+# ------------------------------
+# Local utilities (avoid importing test.py)
+# ------------------------------
+def get_ensemble_weight(seq_len, eval_mode):
+    if eval_mode == 'average':
+        weight = torch.ones(seq_len) / seq_len
+    elif eval_mode == 'weight':
+        weight = torch.ones(seq_len)
+        for i in range(math.ceil(seq_len/2)):
+            weight[i] = (i+1)
+            weight[seq_len-i-1] = (i+1)
+        weight = weight / weight.sum()
+    else:
+        raise ValueError('Invalid mode')
+    return weight
+
+def predict_location(heatmap):
+    if np.amax(heatmap) == 0:
+        return 0, 0, 0, 0
+    else:
+        (cnts, _) = cv2.findContours(heatmap.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        rects = [cv2.boundingRect(ctr) for ctr in cnts]
+        max_area_idx = 0
+        max_area = rects[0][2] * rects[0][3]
+        for i in range(1, len(rects)):
+            area = rects[i][2] * rects[i][3]
+            if area > max_area:
+                max_area_idx = i
+                max_area = area
+        x, y, w, h = rects[max_area_idx]
+        return x, y, w, h
+
+def generate_inpaint_mask(pred_dict, th_h=30):
+    y = np.array(pred_dict['Y'])
+    vis_pred = np.array(pred_dict['Visibility'])
+    inpaint_mask = np.zeros_like(y)
+    i = 0
+    j = 0
+    threshold = th_h
+    while j < len(vis_pred):
+        while i < len(vis_pred)-1 and vis_pred[i] == 1:
+            i += 1
+        j = i
+        while j < len(vis_pred)-1 and vis_pred[j] == 0:
+            j += 1
+        if j == i:
+            break
+        elif i == 0 and y[j] > threshold:
+            inpaint_mask[:j] = 1
+        elif (i > 1 and y[i-1] > threshold) and (j < len(vis_pred) and y[j] > threshold):
+            inpaint_mask[i:j] = 1
+        else:
+            pass
+        i = j
+    return inpaint_mask.tolist()
+
+
+# ------------------------------
+# Datasets (top-level for Windows pickling)
+# ------------------------------
+class SimpleFramesDataset(torch.utils.data.Dataset):
+    def __init__(self, frames_chw_np: np.ndarray, seq_len: int, sliding_step: int, bg_mode: str = '', median_chw: np.ndarray | None = None):
+        self.frames = frames_chw_np  # (N,3,H,W) float32
+        self.seq_len = seq_len
+        self.sliding_step = sliding_step
+        self.bg_mode = bg_mode or ''
+        self.median_chw = median_chw  # (3,H,W) float32 normalized
+        if len(self.frames) < self.seq_len:
+            self.length = 0
+        else:
+            self.length = (len(self.frames) - self.seq_len) // self.sliding_step + 1
+    def __len__(self):
+        return self.length
+    def __getitem__(self, index: int):
+        start = index * self.sliding_step
+        end = start + self.seq_len
+        window = self.frames[start:end]  # (L,3,H,W)
+        x = window.reshape(self.seq_len * 3, HEIGHT, WIDTH)  # (L*3,H,W)
+        # handle concat background mode: prepend median channels
+        if self.bg_mode == 'concat' and self.median_chw is not None:
+            x = np.concatenate([self.median_chw, x], axis=0)  # ((L+1)*3,H,W)
+        data_idx = np.stack([(0, start + f) for f in range(self.seq_len)], axis=0).astype(np.int32)
+        return torch.from_numpy(data_idx), torch.from_numpy(x)
+
+class FramesWindowIterableDataset(torch.utils.data.IterableDataset):
+    def __init__(self, frames_list, seq_len: int, sliding_step: int):
+        super().__init__()
+        self.frames_list = frames_list
+        self.seq_len = seq_len
+        self.sliding_step = sliding_step
+
+    def _process_frame(self, f_bgr: np.ndarray) -> np.ndarray:
+        if f_bgr.shape[0] != HEIGHT or f_bgr.shape[1] != WIDTH:
+            f_bgr = cv2.resize(f_bgr, (WIDTH, HEIGHT), interpolation=cv2.INTER_AREA)
+        f_rgb = cv2.cvtColor(f_bgr, cv2.COLOR_BGR2RGB)
+        chw = np.transpose(f_rgb, (2, 0, 1)).astype(np.float32) / 255.0
+        return chw
+
+    def __iter__(self):
+        total = len(self.frames_list)
+        if total < self.seq_len:
+            return
+
+        # shard indices among workers
+        worker_info = torch.utils.data.get_worker_info()
+        starts = list(range(0, total - self.seq_len + 1, self.sliding_step))
+        if worker_info is not None:
+            num_workers = worker_info.num_workers
+            worker_id = worker_info.id
+            # contiguous split
+            per_worker = (len(starts) + num_workers - 1) // num_workers
+            s = worker_id * per_worker
+            e = min(s + per_worker, len(starts))
+            starts = starts[s:e]
+
+        for start in starts:
+            end = start + self.seq_len
+            window = [self._process_frame(self.frames_list[fi]) for fi in range(start, end)]
+            x = np.stack(window, axis=0).reshape(self.seq_len * 3, HEIGHT, WIDTH)
+            data_idx = np.stack([(0, start + f) for f in range(self.seq_len)], axis=0).astype(np.int32)
+            yield torch.from_numpy(data_idx), torch.from_numpy(x)
+
+
 def pred_main(frame_list, fps, w, h, tracknet_file = "ckpts/TrackNet_best.pt", inpaintnet_file = None, batch_size = 1, eval_mode = "weight", output_video = True, traj_len = 8, large_video = False):
 
     # Record start time
     start_time = time.time()
     
-    num_workers = batch_size if batch_size <= 16 else 16
+    # Perf knobs
+    device = _get_device()
+    torch.backends.cudnn.benchmark = True
+    if torch.cuda.is_available():
+        try:
+            torch.backends.cuda.matmul.allow_tf32 = True
+        except Exception:
+            pass
+
+    cpu_count = os.cpu_count() or 4
+    # Windows 避免 DataLoader 进程复制大量帧导致首批卡顿
+    if platform.system() == 'Windows':
+        num_workers = 0
+    else:
+        num_workers = min(max(1, cpu_count - 1), 8)
+    # Heuristic batch size if not provided or too small
+    if batch_size is None or batch_size <= 1:
+        batch_size = 8 if device.type == 'cuda' else 2
     # out_csv_file = os.path.join(save_dir, f'{video_name}_ball.csv')
     # out_video_file_cap = os.path.join(save_dir, f'{video_name}.mp4')
 
     # if not os.path.exists(save_dir):
     #     os.makedirs(save_dir)
     
-    # Check if CUDA is available and set device
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # Device and cached models
     print(f"Using device: {device}")
-    
-    # Load model
-    tracknet_ckpt = torch.load(tracknet_file, map_location=device)
-    tracknet_seq_len = tracknet_ckpt['param_dict']['seq_len']
-    bg_mode = tracknet_ckpt['param_dict']['bg_mode']
-    tracknet = get_model('TrackNet', tracknet_seq_len, bg_mode).to(device)
-    tracknet.load_state_dict(tracknet_ckpt['model'])
-
-    if inpaintnet_file:
-        inpaintnet_ckpt = torch.load(inpaintnet_file, map_location=device)
-        inpaintnet_seq_len = inpaintnet_ckpt['param_dict']['seq_len']
-        inpaintnet = get_model('InpaintNet').to(device)
-        inpaintnet.load_state_dict(inpaintnet_ckpt['model'])
-    else:
-        inpaintnet = None
+    model_pack = get_models(tracknet_file, inpaintnet_file, device)
+    tracknet = model_pack['tracknet']
+    tracknet_seq_len = model_pack['tracknet_seq_len']
+    bg_mode = model_pack['bg_mode']
+    inpaintnet = model_pack['inpaintnet']
+    inpaintnet_seq_len = model_pack['inpaintnet_seq_len']
 
     # Sample all frames from video
     # frame_list, fps, (w, h) = generate_frames_from_cap(video_file_cap)
@@ -150,19 +325,50 @@ def pred_main(frame_list, fps, w, h, tracknet_file = "ckpts/TrackNet_best.pt", i
                         'Img_scaler': (w_scaler, h_scaler), 'Img_shape': (w, h)}
 
     # Test on TrackNet
-    tracknet.eval()
     seq_len = tracknet_seq_len
-    if eval_mode == 'nonoverlap':
-        # Create dataset with non-overlap sampling
-        # frame_list, fps, (w,h) = generate_frames_from_cap(video_file_cap)
-        dataset = Shuttlecock_Trajectory_Dataset(seq_len=seq_len, sliding_step=seq_len, data_mode='heatmap', bg_mode=bg_mode,
-                                                 frame_arr=np.array(frame_list)[:, :, :, ::-1], padding=True)
-        data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, drop_last=False)
 
+    # Lazy preprocessing dataset moved to top-level class (Windows pickling safe)
+    # Build frames_chw once
+    frames_chw = np.empty((len(frame_list), 3, HEIGHT, WIDTH), dtype=np.float32)
+    for idx, f in enumerate(frame_list):
+        f = cv2.resize(f, (WIDTH, HEIGHT), interpolation=cv2.INTER_AREA)
+        f = cv2.cvtColor(f, cv2.COLOR_BGR2RGB)
+        frames_chw[idx] = np.transpose(f, (2, 0, 1)) / 255.0
+
+    # Background median for concat
+    median_chw = None
+    if bg_mode == 'concat' and len(frame_list) > 0:
+        sample_step = max(1, len(frame_list) // 50)
+        sampled = frames_chw[::sample_step]  # (S,3,H,W)
+        median = np.median(sampled, axis=0)  # (3,H,W)
+        median_chw = median.astype(np.float32)
+
+    if eval_mode == 'nonoverlap':
+        # Create dataset with non-overlap sampling (lazy)
+        dataset = SimpleFramesDataset(frames_chw, seq_len=seq_len, sliding_step=seq_len, bg_mode=bg_mode, median_chw=median_chw)
+        dl_kwargs = dict(
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            drop_last=False,
+            pin_memory=(device.type == 'cuda'),
+            persistent_workers=(num_workers > 0),
+        )
+        if num_workers > 0:
+            dl_kwargs['prefetch_factor'] = 2
+        data_loader = DataLoader(dataset, **dl_kwargs)
+
+        amp_enabled = (device.type == 'cuda')
         for step, (i, x) in enumerate(tqdm(data_loader)):
-            x = x.float().to(device)
-            with torch.no_grad():
-                y_pred = tracknet(x).detach().cpu()
+            x = x.float().to(device, non_blocking=True)
+            x = x.to(memory_format=torch.channels_last)
+            with torch.inference_mode():
+                if amp_enabled:
+                    with torch.amp.autocast('cuda'):
+                        y_pred = tracknet(x)
+                else:
+                    y_pred = tracknet(x)
+                y_pred = y_pred.detach().cpu()
             
             # Predict
             tmp_pred = predict(i, y_pred=y_pred, img_scaler=img_scaler)
@@ -181,11 +387,18 @@ def pred_main(frame_list, fps, w, h, tracknet_file = "ckpts/TrackNet_best.pt", i
             
         else:
             # Sample all frames from video
-            # frame_list = generate_frames_from_cap(video_file_cap)
-            # print(frame_list)
-            dataset = Shuttlecock_Trajectory_Dataset(seq_len=seq_len, sliding_step=1, data_mode='heatmap', bg_mode=bg_mode,
-                                                 frame_arr=np.array(frame_list)[:, :, :, ::-1])
-            data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, drop_last=False)
+            dataset = SimpleFramesDataset(frames_chw, seq_len=seq_len, sliding_step=1, bg_mode=bg_mode, median_chw=median_chw)
+            dl_kwargs = dict(
+                batch_size=batch_size,
+                shuffle=False,
+                num_workers=num_workers,
+                drop_last=False,
+                pin_memory=(device.type == 'cuda'),
+                persistent_workers=(num_workers > 0),
+            )
+            if num_workers > 0:
+                dl_kwargs['prefetch_factor'] = 2
+            data_loader = DataLoader(dataset, **dl_kwargs)
             video_len = len(frame_list)
         
         # Init prediction buffer params
@@ -195,11 +408,18 @@ def pred_main(frame_list, fps, w, h, tracknet_file = "ckpts/TrackNet_best.pt", i
         frame_i = torch.arange(seq_len-1, -1, -1) # [7, 6, 5, 4, 3, 2, 1, 0]
         y_pred_buffer = torch.zeros((buffer_size, seq_len, HEIGHT, WIDTH), dtype=torch.float32)
         weight = get_ensemble_weight(seq_len, eval_mode)
+        amp_enabled = (device.type == 'cuda')
         for step, (i, x) in enumerate(tqdm(data_loader)):
-            x = x.float().to(device)
+            x = x.float().to(device, non_blocking=True)
+            x = x.to(memory_format=torch.channels_last)
             b_size, seq_len = i.shape[0], i.shape[1]
-            with torch.no_grad():
-                y_pred = tracknet(x).detach().cpu()
+            with torch.inference_mode():
+                if amp_enabled:
+                    with torch.amp.autocast('cuda'):
+                        y_pred = tracknet(x)
+                else:
+                    y_pred = tracknet(x)
+                y_pred = y_pred.detach().cpu()
             
             y_pred_buffer = torch.cat((y_pred_buffer, y_pred), dim=0)
             ensemble_i = torch.empty((0, 1, 2), dtype=torch.float32)
@@ -239,7 +459,6 @@ def pred_main(frame_list, fps, w, h, tracknet_file = "ckpts/TrackNet_best.pt", i
 
     # Test on TrackNetV3 (TrackNet + InpaintNet)
     if inpaintnet is not None:
-        inpaintnet.eval()
         seq_len = inpaintnet_seq_len
         tracknet_pred_dict['Inpaint_Mask'] = generate_inpaint_mask(tracknet_pred_dict, th_h=h*0.05)
         inpaint_pred_dict = {'Frame':[], 'X':[], 'Y':[], 'Visibility':[]}
@@ -247,12 +466,27 @@ def pred_main(frame_list, fps, w, h, tracknet_file = "ckpts/TrackNet_best.pt", i
         if eval_mode == 'nonoverlap':
             # Create dataset with non-overlap sampling
             dataset = Shuttlecock_Trajectory_Dataset(seq_len=seq_len, sliding_step=seq_len, data_mode='coordinate', pred_dict=tracknet_pred_dict, padding=True)
-            data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, drop_last=False)
+            data_loader = DataLoader(
+                dataset,
+                batch_size=batch_size,
+                shuffle=False,
+                num_workers=num_workers,
+                drop_last=False,
+                pin_memory=(device.type == 'cuda'),
+                persistent_workers=(num_workers > 0),
+            )
 
+            amp_enabled = (device.type == 'cuda')
             for step, (i, coor_pred, inpaint_mask) in enumerate(tqdm(data_loader)):
-                coor_pred, inpaint_mask = coor_pred.float().to(device), inpaint_mask.float().to(device)
-                with torch.no_grad():
-                    coor_inpaint = inpaintnet(coor_pred, inpaint_mask).detach().cpu()
+                coor_pred = coor_pred.float().to(device, non_blocking=True)
+                inpaint_mask = inpaint_mask.float().to(device, non_blocking=True)
+                with torch.inference_mode():
+                    if amp_enabled:
+                        with torch.cuda.amp.autocast():
+                            coor_inpaint = inpaintnet(coor_pred, inpaint_mask)
+                    else:
+                        coor_inpaint = inpaintnet(coor_pred, inpaint_mask)
+                    coor_inpaint = coor_inpaint.detach().cpu()
                     coor_inpaint = coor_inpaint * inpaint_mask + coor_pred * (1-inpaint_mask) # replace predicted coordinates with inpainted coordinates
                 
                 # Thresholding
@@ -267,7 +501,15 @@ def pred_main(frame_list, fps, w, h, tracknet_file = "ckpts/TrackNet_best.pt", i
         else:
             # Create dataset with overlap sampling for temporal ensemble
             dataset = Shuttlecock_Trajectory_Dataset(seq_len=seq_len, sliding_step=1, data_mode='coordinate', pred_dict=tracknet_pred_dict)
-            data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, drop_last=False)
+            data_loader = DataLoader(
+                dataset,
+                batch_size=batch_size,
+                shuffle=False,
+                num_workers=num_workers,
+                drop_last=False,
+                pin_memory=(device.type == 'cuda'),
+                persistent_workers=(num_workers > 0),
+            )
             weight = get_ensemble_weight(seq_len, eval_mode)
 
             # Init buffer params
@@ -277,11 +519,18 @@ def pred_main(frame_list, fps, w, h, tracknet_file = "ckpts/TrackNet_best.pt", i
             frame_i = torch.arange(seq_len-1, -1, -1) # [7, 6, 5, 4, 3, 2, 1, 0]
             coor_inpaint_buffer = torch.zeros((buffer_size, seq_len, 2), dtype=torch.float32)
             
+            amp_enabled = (device.type == 'cuda')
             for step, (i, coor_pred, inpaint_mask) in enumerate(tqdm(data_loader)):
-                coor_pred, inpaint_mask = coor_pred.float().to(device), inpaint_mask.float().to(device)
+                coor_pred = coor_pred.float().to(device, non_blocking=True)
+                inpaint_mask = inpaint_mask.float().to(device, non_blocking=True)
                 b_size = i.shape[0]
-                with torch.no_grad():
-                    coor_inpaint = inpaintnet(coor_pred, inpaint_mask).detach().cpu()
+                with torch.inference_mode():
+                    if amp_enabled:
+                        with torch.cuda.amp.autocast():
+                            coor_inpaint = inpaintnet(coor_pred, inpaint_mask)
+                    else:
+                        coor_inpaint = inpaintnet(coor_pred, inpaint_mask)
+                    coor_inpaint = coor_inpaint.detach().cpu()
                     coor_inpaint = coor_inpaint * inpaint_mask + coor_pred * (1-inpaint_mask)
                 
                 # Thresholding
