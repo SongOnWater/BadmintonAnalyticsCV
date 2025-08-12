@@ -1,4 +1,5 @@
 import os
+import time
 from utils.general import *
 import pickle
 import sys
@@ -32,6 +33,9 @@ def create_frames():
 
 def testing():
 
+    # Record overall start time
+    overall_start_time = time.time()
+    
     frame_list, pred_dict, out_file = create_frames()
     print("legth of fl , pd , of is ",len(frame_list),len(pred_dict),len(out_file))
     print(pred_dict)
@@ -152,7 +156,11 @@ def testing():
             out.release()
             print(f"VideoWriter released. Output file: {temp_output_path}")
 
-
+    # Record overall end time and calculate duration
+    overall_end_time = time.time()
+    overall_duration = overall_end_time - overall_start_time
+    
+    print(f"Video processing completed in {overall_duration:.2f} seconds")
     print("Done")
 
 # def return_frame_list():
