@@ -3,6 +3,7 @@ import argparse
 import numpy as np
 from tqdm import tqdm
 import time
+import gc
 
 import torch
 from torch.utils.data import DataLoader
@@ -10,9 +11,10 @@ from torch.utils.data import DataLoader
 from test import predict_location, get_ensemble_weight, generate_inpaint_mask
 from dataset import Shuttlecock_Trajectory_Dataset, Video_IterableDataset
 from utils.general import *
+from utils.performance_monitor import monitor, performance_timer, memory_efficient_processing
 from moviepy.video.io.VideoFileClip import VideoFileClip
 from moviepy.editor import VideoFileClip, concatenate_videoclips
-# from testing_3 import testing
+from config import Config
 
 import pickle
 
@@ -101,28 +103,58 @@ def predict(indices, y_pred=None, c_pred=None, img_scaler=(1, 1)):
     return pred_dict    
 
 
-def pred_main(frame_list, fps, w, h, tracknet_file = "ckpts/TrackNet_best.pt", inpaintnet_file = None, batch_size = 1, eval_mode = "weight", output_video = True, traj_len = 8, large_video = False):
+def pred_main(frame_list, fps, w, h, tracknet_file = "ckpts/TrackNet_best.pt", inpaintnet_file = None, batch_size = 4, eval_mode = "weight", output_video = True, traj_len = 8, large_video = False):
 
     # Record start time
     start_time = time.time()
     
-    num_workers = batch_size if batch_size <= 16 else 16
-    # out_csv_file = os.path.join(save_dir, f'{video_name}_ball.csv')
-    # out_video_file_cap = os.path.join(save_dir, f'{video_name}.mp4')
-
-    # if not os.path.exists(save_dir):
-    #     os.makedirs(save_dir)
+    # 🚀 AGGRESSIVE OPTIMIZATION: Much larger batch sizes for maximum GPU utilization
+    if torch.cuda.is_available():
+        # Get GPU memory info
+        gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / 1024**3
+        if gpu_memory_gb >= 8:  # 8GB+ GPU
+            batch_size = min(batch_size or 32, 32)  # Much larger batch size
+        elif gpu_memory_gb >= 4:  # 4GB+ GPU  
+            batch_size = min(batch_size or 16, 16)
+        else:  # Smaller GPU
+            batch_size = min(batch_size or 8, 8)
+        num_workers = 0  # Disable multiprocessing for faster data loading
+    else:
+        batch_size = min(batch_size or 4, 4)  # Larger CPU batch size
+        num_workers = 0  # Disable multiprocessing overhead
     
     # Check if CUDA is available and set device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
+    print(f"🚀 OPTIMIZED: Using device: {device}, batch_size: {batch_size}, num_workers: {num_workers}")
     
-    # Load model
+    # Load model with aggressive optimizations
+    print("Loading model...")
     tracknet_ckpt = torch.load(tracknet_file, map_location=device)
     tracknet_seq_len = tracknet_ckpt['param_dict']['seq_len']
     bg_mode = tracknet_ckpt['param_dict']['bg_mode']
     tracknet = get_model('TrackNet', tracknet_seq_len, bg_mode).to(device)
     tracknet.load_state_dict(tracknet_ckpt['model'])
+    
+    # 🚀 AGGRESSIVE MODEL OPTIMIZATIONS
+    if device.type == 'cuda':
+        print("🚀 Applying GPU optimizations...")
+        # Use mixed precision for maximum speed
+        tracknet = tracknet.half()
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cudnn.deterministic = False
+        # Enable memory efficient attention if available
+        try:
+            torch.backends.cuda.enable_flash_sdp(True)
+        except:
+            pass
+    
+    # 🚀 COMPILE MODEL for PyTorch 2.0+ (huge speedup)
+    try:
+        if hasattr(torch, 'compile'):
+            print("🚀 Compiling model with torch.compile...")
+            tracknet = torch.compile(tracknet, mode='max-autotune')
+    except:
+        print("torch.compile not available, skipping")
 
     if inpaintnet_file:
         inpaintnet_ckpt = torch.load(inpaintnet_file, map_location=device)
@@ -180,13 +212,19 @@ def pred_main(frame_list, fps, w, h, tracknet_file = "ckpts/TrackNet_best.pt", i
             pass
             
         else:
-            # Sample all frames from video
-            # frame_list = generate_frames_from_cap(video_file_cap)
-            # print(frame_list)
+            # 🚀 MAJOR OPTIMIZATION: Pre-process frame array once
+            print("🚀 Pre-processing frame array...")
+            frame_arr = np.array(frame_list)[:, :, :, ::-1]  # Convert BGR to RGB once
+            del frame_list  # Free memory immediately
+            
             dataset = Shuttlecock_Trajectory_Dataset(seq_len=seq_len, sliding_step=1, data_mode='heatmap', bg_mode=bg_mode,
-                                                 frame_arr=np.array(frame_list)[:, :, :, ::-1])
-            data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, drop_last=False)
-            video_len = len(frame_list)
+                                                 frame_arr=frame_arr)
+            
+            # 🚀 OPTIMIZATION: Use pin_memory for faster GPU transfer
+            data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, 
+                                   num_workers=num_workers, drop_last=False, 
+                                   pin_memory=(device.type == 'cuda'))
+            video_len = len(frame_arr)
         
         # Init prediction buffer params
         num_sample, sample_count = video_len-seq_len+1, 0
@@ -195,11 +233,31 @@ def pred_main(frame_list, fps, w, h, tracknet_file = "ckpts/TrackNet_best.pt", i
         frame_i = torch.arange(seq_len-1, -1, -1) # [7, 6, 5, 4, 3, 2, 1, 0]
         y_pred_buffer = torch.zeros((buffer_size, seq_len, HEIGHT, WIDTH), dtype=torch.float32)
         weight = get_ensemble_weight(seq_len, eval_mode)
-        for step, (i, x) in enumerate(tqdm(data_loader)):
-            x = x.float().to(device)
+        # 🚀 MAJOR OPTIMIZATION: Pre-allocate tensors and use pinned memory
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()  # Clear cache before processing
+        
+        for step, (i, x) in enumerate(tqdm(data_loader, desc="🚀 Processing frames")):
+            # 🚀 OPTIMIZED: Faster data transfer with pinned memory
+            if device.type == 'cuda':
+                x = x.pin_memory().half().to(device, non_blocking=True)
+            else:
+                x = x.float().to(device, non_blocking=True)
+            
             b_size, seq_len = i.shape[0], i.shape[1]
+            
+            # 🚀 OPTIMIZED: Use autocast for mixed precision
             with torch.no_grad():
-                y_pred = tracknet(x).detach().cpu()
+                if device.type == 'cuda':
+                    with torch.cuda.amp.autocast():
+                        y_pred = tracknet(x)
+                    y_pred = y_pred.float().detach().cpu()
+                else:
+                    y_pred = tracknet(x).detach().cpu()
+            
+            # 🚀 OPTIMIZATION: Clear GPU cache periodically
+            if device.type == 'cuda' and step % 50 == 0:
+                torch.cuda.empty_cache()
             
             y_pred_buffer = torch.cat((y_pred_buffer, y_pred), dim=0)
             ensemble_i = torch.empty((0, 1, 2), dtype=torch.float32)

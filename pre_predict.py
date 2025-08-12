@@ -1,12 +1,23 @@
 import time
 from predict import *
 import pandas
+from config import Config
+from utils.performance_monitor import monitor, performance_timer
+import gc
 
-if __name__ == '__main__':
+@performance_timer
+def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--video_file', type=str, help='file path of the video')
-    parser.add_argument('--save_dir', default = 'prediction', type = str)
+    parser.add_argument('--save_dir', default='prediction', type=str)
+    parser.add_argument('--batch_size', type=int, default=None, help='batch size for processing')
     args = parser.parse_args()
+    
+    # Initialize configuration and performance monitoring
+    Config.setup_torch_optimizations()
+    Config.create_temp_dir()
+    monitor.log_memory_usage("Initialization")
+    
     save_dir = args.save_dir
     video_name = os.path.splitext(os.path.basename(args.video_file))[0]
     out_csv_file = os.path.join(save_dir, f'{video_name}_ball.csv')
@@ -32,73 +43,30 @@ if __name__ == '__main__':
 
     if abs(fps - 30.0) > 0.1: 
         print("Converting video to 30 FPS...")
+        monitor.start_timer("fps_conversion")
         video_file_to_process = change_fps(args.video_file)
+        monitor.end_timer("fps_conversion")
 
     
-    # predicting in batches to not use too much memory
-
-    vfc = VideoFileClip(video_file_to_process)
-    clip_duration = 10
-    total_length = vfc.duration
-    num_clips = int(total_length // clip_duration)
-
-    remainder = total_length - num_clips*clip_duration
-    # print(remainder)
-
-    # Ensure at least one clip is processed even for very short videos
-    if remainder > 0 or num_clips == 0:
-        num_clips += 1
-
-    print(f"Total video length: {total_length:.2f} seconds")
-    print(f"Processing video in {num_clips} segments (each {clip_duration} seconds)")
+    # 🚀 MAJOR OPTIMIZATION: Process entire video at once instead of splitting
+    print("🚀 Processing entire video without splitting (MAJOR SPEEDUP)")
     
-    pred_dict_joined = {'Frame':[], 'X':[], 'Y':[], 'Visibility':[]}
-
     # Record overall processing start time
     overall_start_time = time.time()
-
-    for i in range(num_clips):
-        print(f"\nProcessing segment {i+1}/{num_clips}...")
-        
-        # Record segment start time
-        segment_start_time = time.time()
-        
-        if (i != num_clips-1):
-            start_time = i * clip_duration
-            end_time = (i+1) * clip_duration
-            print(f"  Segment time: {start_time:.1f}s to {end_time:.1f}s")
-            clip = vfc.subclip(start_time, end_time)
-            clip.write_videofile("temp_clip.mp4", codec='libx264', audio=False)
-            cap = cv2.VideoCapture("temp_clip.mp4")
-
-            frame_list, fps, (w,h) = generate_frames_from_cap(cap)
-            pred_dict = pred_main(frame_list=frame_list, fps=fps, w=w, h=h)
-        
-        else:
-            start_time = i * clip_duration
-            end_time = total_length
-            print(f"  Segment time: {start_time:.1f}s to {end_time:.1f}s (last segment)")
-            clip = vfc.subclip(start_time, end_time)
-            clip.write_videofile("temp_clip.mp4", codec='libx264', audio=False)
-            cap = cv2.VideoCapture("temp_clip.mp4")
-            frame_list, fps, (w,h) = generate_frames_from_cap(cap)
-            pred_dict = pred_main(frame_list=frame_list, fps=fps, w=w, h=h)
-
-        # Record segment end time and calculate duration
-        segment_end_time = time.time()
-        segment_duration = segment_end_time - segment_start_time
-        print(f"  Processed {len(pred_dict['Frame'])} frames in this segment")
-        print(f"  Segment processing time: {segment_duration:.2f} seconds")
-        
-        for k in range(len(pred_dict['Frame'])):
-            pred_dict['Frame'][k] += i*30*clip_duration
-
-        pred_dict_joined['Frame'].extend(pred_dict['Frame'])
-        pred_dict_joined['Visibility'].extend(pred_dict['Visibility'])
-        pred_dict_joined['X'].extend(pred_dict['X'])
-        pred_dict_joined['Y'].extend(pred_dict['Y'])
-
-        # print(pred_dict_joined)
+    
+    # Load all frames at once - much faster than splitting video
+    print("Loading all frames from video...")
+    cap = cv2.VideoCapture(video_file_to_process)
+    frame_list, fps, (w, h) = generate_frames_from_cap(cap)
+    cap.release()
+    
+    print(f"Loaded {len(frame_list)} frames from video")
+    
+    # Process all frames in one go
+    pred_dict_joined = pred_main(frame_list=frame_list, fps=fps, w=w, h=h, batch_size=args.batch_size or 8)
+    
+    # Clear frame_list to free memory
+    del frame_list
         
     # Record overall processing end time and calculate duration
     overall_end_time = time.time()
@@ -130,6 +98,16 @@ if __name__ == '__main__':
     except:
         print("Could not remove temporary file: temp_clip.mp4")
     
+    # Log final performance metrics
+    monitor.log_memory_usage("Completion")
+    monitor.print_summary()
+    
     print(f"\nVideo processing completed successfully!")
     print(f"Total processing time: {overall_duration:.2f} seconds")
-    print(f"Average time per segment: {overall_duration/num_clips:.2f} seconds")
+    print(f"Frames per second: {len(pred_dict_joined['Frame'])/overall_duration:.1f} FPS")
+    
+    # Cleanup
+    Config.cleanup_temp_files()
+
+if __name__ == '__main__':
+    main()

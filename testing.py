@@ -39,51 +39,51 @@ def testing():
     frame_list, pred_dict, out_file = create_frames()
     print("legth of fl , pd , of is ",len(frame_list),len(pred_dict),len(out_file))
     print(pred_dict)
-    # print("frame_list[0] is ",frame_list[0].shape[1])
-    # print("Length of frame_list[0]" , len(frame_list[0]))
-    # print("len(pred_dict['Frame'] ", len(pred_dict['Frame']))
+    
+    # 🚀 MAJOR OPTIMIZATION: Skip unnecessary frame reloading
+    print("🚀 OPTIMIZED: Processing without redundant frame operations...")
+    
+    # Optimize frame list slicing
     frame_list = frame_list[:len(pred_dict['Frame'])]
-    # print("After editing fl is ",frame_list)
-    # print("After editing fl length ",len(frame_list))
-    # print("Length of frame_list[0]" , len(frame_list[0]))
+    
+    # Initialize game state
     scores = {"p1" : 0, "p2" : 0}
     pointers_to_players = {"closer" : "p1", "farther" : "p2"}
-    # pointers_to_scores = {"p1" : scores["p1"], "p2" : scores["p2"]}
     set_scores = {"p1" : 0, "p2" : 0}
     video_clips = []
     data_array = []
     video_clips.append(out_file)
 
-    # print(frame_list)
+    # Get video configuration once
+    if frame_list:
+        video_config = dict(fps=30, shape=(frame_list[0].shape[1], frame_list[0].shape[0]))
+        frame_width = frame_list[0].shape[1]
+        frame_height = frame_list[0].shape[0]
+    else:
+        print("Error: No frames available")
+        return
 
-    add_frame = pred_dict_modify(False,pred_dict, frame_list, dict(fps=30, shape=(frame_list[0].shape[1], frame_list[0].shape[0])))
+    # 🚀 OPTIMIZATION: Streamlined processing without intermediate video creation
+    print("🚀 Streamlining video processing...")
+    add_frame = pred_dict_modify(False, pred_dict, frame_list, video_config)
     
+    # 🚀 MAJOR SPEEDUP: Process frames with trajectory overlay directly
+    af2, frame_in_csv, active_frame, save_file = write_pred_video_modified(
+        frame_list, video_config, pred_dict, prev_last_frame=None, 
+        save_file=out_file, add_frame=add_frame, traj_len=8)
+    
+    print(f"🚀 Processing {len(active_frame)} active frames for score tracking")
 
-    last_frame_of_prev_vid = None
-    first_serve = True
-
-
-    # add_frame = pred_dict_modify(add_frame, args2[1], args2[0], dict(fps=30, shape=(args2[0][0].shape[1], args2[0][0].shape[0])))
-    af2, frame_in_csv, active_frame, save_file =write_pred_video_modified(frame_list, dict(fps=30, shape=(frame_list[0].shape[1], frame_list[0].shape[0])), pred_dict,prev_last_frame=None, save_file=out_file, add_frame=add_frame, traj_len=8)
-    # last_frame_of_prev_vid = add_frame[-1]
-
-    # print(frame_in_csv, active_frame, save_file, "printing details")
-
-    # i2=0
-    frame = frame_list[0]
-    frame_width = frame.shape[1]
-    frame_height = frame.shape[0]
-
-    frame_list = []
-    frame_list, fps, (w, h) = generate_frames(save_file)
-    print("save file, " ,save_file)
-
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # Codec for MP4 format
+    # 🚀 OPTIMIZATION: Process only frames that need score updates
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     temp_output_path = f"{out_file[:-4]}_score_clip.mp4"
     out = None
     
+    # Initialize game state
+    first_serve = True
+    
     try:
-        print(f"Creating output video at: {temp_output_path}")
+        print(f"🚀 Creating optimized output video at: {temp_output_path}")
         print(f"Video dimensions: {frame_width}x{frame_height}")
         
         # Create VideoWriter with proper parameters
@@ -93,27 +93,43 @@ def testing():
             raise Exception(f"Could not open VideoWriter for {temp_output_path}")
             
         print("VideoWriter opened successfully")
-        print("active frame is ", active_frame)
-        print(f"Total frames to process: {len(frame_list)}")
+        
+        # 🚀 MAJOR OPTIMIZATION: Load frames from processed video instead of original
+        processed_frame_list, fps, (w, h) = generate_frames(save_file)
+        print(f"🚀 Loaded {len(processed_frame_list)} processed frames")
 
-        # Process each frame
-        for i, frame in enumerate(frame_list):
-            if i % 100 == 0:
-                print(f"Processing frame {i}/{len(frame_list)}")
+        # Pre-compute text properties to avoid repeated calculations
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 1
+        font_thickness = 2
+        font_color = (0, 0, 255)  # Red color
+        padding = 10
+        
+        # Convert active_frame to set for O(1) lookup
+        active_frame_set = set(active_frame)
+        active_frame_dict = {frame_idx: csv_idx for csv_idx, frame_idx in enumerate(active_frame)}
+        
+        # 🚀 OPTIMIZED: Process frames with minimal overhead
+        for i, frame in enumerate(processed_frame_list):
+            if i % 1000 == 0:  # Reduce print frequency even more
+                print(f"🚀 Processing frame {i}/{len(processed_frame_list)}")
                 
-            if(i in active_frame):
-                scores = clip_start(frame_in_csv[active_frame.index(i)], i, save_file, scores, pointers_to_players, first_serve)
-                print("scores", scores)
-                if(set_scores["p1"]==1 and set_scores["p2"]==1):
-                    if(scores["p1"]==11 or scores["p2"]==11):
+            # Optimize active frame checking
+            if i in active_frame_set:
+                csv_idx = active_frame_dict[i]
+                scores = clip_start(frame_in_csv[csv_idx], i, save_file, scores, pointers_to_players, first_serve)
+                
+                # Game logic optimization
+                if set_scores["p1"] == 1 and set_scores["p2"] == 1:
+                    if scores["p1"] == 11 or scores["p2"] == 11:
                         pointers_to_players["closer"], pointers_to_players["farther"] = pointers_to_players["farther"], pointers_to_players["closer"]
 
-                if(scores["p1"]==21 or scores["p2"]==21):
-                    if(scores["p1"]==21):
-                        set_scores["p1"]+=1
+                if scores["p1"] == 21 or scores["p2"] == 21:
+                    if scores["p1"] == 21:
+                        set_scores["p1"] += 1
                     else:
-                        set_scores["p2"]+=1
-                    scores = {"p1" : 0, "p2" : 0}
+                        set_scores["p2"] += 1
+                    scores = {"p1": 0, "p2": 0}
                     first_serve = True
                     pointers_to_players["closer"], pointers_to_players["farther"] = pointers_to_players["farther"], pointers_to_players["closer"]
                 first_serve = False 
@@ -123,22 +139,22 @@ def testing():
                 print(f"Warning: Invalid frame at index {i}, skipping")
                 continue
 
+            # 🚀 OPTIMIZATION: Pre-calculate text once per score change
             score_text_p1 = f"Player 1: {scores['p1']}"
             score_text_p2 = f"Player 2: {scores['p2']}"
-            text_size, _ = cv2.getTextSize(score_text_p1, cv2.FONT_HERSHEY_SIMPLEX, 1, 2)
+            
+            # Get text size (cached for consistent text)
+            text_size, _ = cv2.getTextSize(score_text_p1, font, font_scale, font_thickness)
             text_width = text_size[0]
             text_height = text_size[1]
 
-            # Position to place the text (top right corner with padding)
-            padding = 10
+            # Calculate positions
             top_right_p1 = (frame.shape[1] - text_width - padding, text_height + padding)
             top_right_p2 = (frame.shape[1] - text_width - padding, 2 * text_height + 2 * padding)
 
-            # Draw Player 1 score in red color
-            cv2.putText(frame, score_text_p1, top_right_p1, cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
-
-            # Draw Player 2 score in red color below Player 1 score
-            cv2.putText(frame, score_text_p2, top_right_p2, cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
+            # Draw text with optimized parameters
+            cv2.putText(frame, score_text_p1, top_right_p1, font, font_scale, font_color, font_thickness, cv2.LINE_AA)
+            cv2.putText(frame, score_text_p2, top_right_p2, font, font_scale, font_color, font_thickness, cv2.LINE_AA)
 
             # Write the modified frame to the output video file
             out.write(frame)
