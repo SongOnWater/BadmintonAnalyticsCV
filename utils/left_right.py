@@ -78,7 +78,7 @@ def get_bounding_boxes(frame, img_height, img_width):
 
 #Function to visualize bounding boxes on a frame and print the coordinates
 def visualize_boxes_xywh(mid_line_coord, frame, boxes, img_width, img_height):
-    print("From left_right ", boxes)
+    
     
     if boxes is None or len(boxes) == 0:
         print("Warning: No bounding boxes detected")
@@ -91,7 +91,6 @@ def visualize_boxes_xywh(mid_line_coord, frame, boxes, img_width, img_height):
         else:
             p1_side = "Right"
         
-        print("Player 1 is on the", p1_side)
         return frame, p1_side
         
     except Exception as e:

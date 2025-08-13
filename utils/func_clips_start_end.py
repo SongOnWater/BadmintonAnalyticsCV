@@ -97,7 +97,7 @@ def read_csv_for_mp4(mp4_file_path):
 
 
 def clip_end(frame_in_csv):
-    print("clip ends here",frame_in_csv) 
+    pass 
 
 def clip_start(frame_in_csv, frame_in_mp4, path_to_mp4, scores, pointers_to_players, first_serve):
 
@@ -106,7 +106,7 @@ def clip_start(frame_in_csv, frame_in_mp4, path_to_mp4, scores, pointers_to_play
         return scores
     path_to_csv =read_csv_for_mp4(path_to_mp4)
     # print("converted into csv")
-    print("clip starts here", frame_in_csv)
+    # start of clip
     # img_height, img_width = get_video_dimensions(path_to_mp4)
 
     mid_line_coord = return_middle_line(path_to_mp4)
@@ -180,7 +180,6 @@ def clip_start(frame_in_csv, frame_in_mp4, path_to_mp4, scores, pointers_to_play
                 # print("list1 = ",list1 , "\nlist2 = ",list2)
 
                 if list1[0]=='' or list2[0]=='':
-                    print("value:", direction_determiner)
                     if direction_determiner > 0:
                         direction = "Right"
                     elif direction_determiner < 0:
@@ -188,7 +187,7 @@ def clip_start(frame_in_csv, frame_in_mp4, path_to_mp4, scores, pointers_to_play
                     else:
                         direction = "stationary"
                     
-                    print(f"Final Direction: {direction}")
+                    
                     break
                 
                 FrameNo_1, Visibility_1, X_1, Y_1 = list1[0],list1[1],list1[2],list1[3]
@@ -205,7 +204,7 @@ def clip_start(frame_in_csv, frame_in_mp4, path_to_mp4, scores, pointers_to_play
 
                 y_diff = Y_2 - Y_1
                 x_diff = X_2 - X_1
-                print("Frame =",FrameNo_1,"  frame counter =  ", frame_counter)
+                
                 if(y_diff!=0):
                     y_diff_for_direction = y_diff
                 
@@ -235,7 +234,7 @@ def clip_start(frame_in_csv, frame_in_mp4, path_to_mp4, scores, pointers_to_play
                     #     frame_counter += 1
                 
                 if frame_counter == 24:
-                    print("value:", direction_determiner)
+                    
                     if direction_determiner > 0:
                         direction = "Right"
                     elif direction_determiner < 0:
@@ -243,10 +242,10 @@ def clip_start(frame_in_csv, frame_in_mp4, path_to_mp4, scores, pointers_to_play
                     else:
                         direction = "stationary"
                     
-                    print(f"Final Direction: {direction}")
+                    
                     break
 
-                print("DD", direction_determiner, end= " ")
+                
 
             # except ValueError:
             # # If a line read is incomplete or incorrect format, we break the loop
@@ -258,40 +257,40 @@ def clip_start(frame_in_csv, frame_in_mp4, path_to_mp4, scores, pointers_to_play
         if direction == "Right" and p1_side == "Right":
             # assert p2_side == "Left"
             scores[pointers_to_players["farther"]]+=1
-            print("closer Receive")
+            
         elif direction == "Left" and p1_side == "Right":
             # assert p2_side == "Left"
             scores[pointers_to_players["closer"]]+=1
-            print("closer Serve")
+            
         elif direction == "Right" and p1_side == "Left":
             # assert p2_side == "Right"
             scores[pointers_to_players["closer"]]+=1
-            print("closer Serve")
+            
         elif direction == "Left" and p1_side == "Left":
             # assert p2_side == "Right"
             scores[pointers_to_players["farther"]]+=1
-            print("closer Receive")
+            
         else:
-            print("Error in determining the serve")
+            pass
     else:
         if direction == "Right" and p1_side == "Right":
             # assert p2_side == "Left"
             # scores[pointers_to_players["farther"]]+=1
-            print("closer Receive")
+            pass
         elif direction == "Left" and p1_side == "Right":
             # assert p2_side == "Left"
             # scores[pointers_to_players["closer"]]+=1
-            print("closer Serve")
+            pass
         elif direction == "Right" and p1_side == "Left":
             # assert p2_side == "Right"
             # scores[pointers_to_players["closer"]]+=1
-            print("closer Serve")
+            pass
         elif direction == "Left" and p1_side == "Left":
             # assert p2_side == "Right"
             # scores[pointers_to_players["farther"]]+=1
-            print("closer Receive")
+            pass
         else:
-            print("Error in determining the serve")
+            pass
 
     return scores
     

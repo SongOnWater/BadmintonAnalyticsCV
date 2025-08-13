@@ -35,7 +35,7 @@ def testing():
     overall_start_time = time.time()
     
     frame_list, pred_dict, out_file = create_frames()
-    print(pred_dict)
+    # print(pred_dict)
     # print("frame_list[0] is ",frame_list[0].shape[1])
     # print("Length of frame_list[0]" , len(frame_list[0]))
     # print("len(pred_dict['Frame'] ", len(pred_dict['Frame']))
@@ -73,15 +73,15 @@ def testing():
 
     frame_list = []
     frame_list, fps, (w, h) = generate_frames(save_file)
-    print("save file, " ,save_file)
+    # print("save file, " ,save_file)
 
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # Codec for MP4 format
     temp_output_path = f"{out_file[:-4]}_score_clip.mp4"
     out = None
     
     try:
-        print(f"Creating output video at: {temp_output_path}")
-        print(f"Video dimensions: {frame_width}x{frame_height}")
+        # print(f"Creating output video at: {temp_output_path}")
+        # print(f"Video dimensions: {frame_width}x{frame_height}")
         
         # Create VideoWriter with proper parameters
         out = cv2.VideoWriter(temp_output_path, fourcc, 30, (frame_width, frame_height))
@@ -89,9 +89,9 @@ def testing():
         if not out.isOpened():
             raise Exception(f"Could not open VideoWriter for {temp_output_path}")
             
-        print("VideoWriter opened successfully")
-        print("active frame is ", active_frame)
-        print(f"Total frames to process: {len(frame_list)}")
+        # print("VideoWriter opened successfully")
+        # print("active frame is ", active_frame)
+        # print(f"Total frames to process: {len(frame_list)}")
 
         # Process each frame
         for i, frame in enumerate(frame_list):
@@ -135,7 +135,7 @@ def testing():
             # Write the modified frame to the output video file
             out.write(frame)
             
-        print(f"Finished processing all {len(frame_list)} frames")
+        # print(f"Finished processing all {len(frame_list)} frames")
         
     except Exception as e:
         print(f"Error during video processing: {str(e)}")
@@ -144,16 +144,16 @@ def testing():
     finally:
         # Ensure VideoWriter is properly released
         if out is not None:
-            print("Releasing VideoWriter...")
+            # print("Releasing VideoWriter...")
             out.release()
-            print(f"VideoWriter released. Output file: {temp_output_path}")
+            # print(f"VideoWriter released. Output file: {temp_output_path}")
 
     # Record overall end time and calculate duration
     overall_end_time = time.time()
     overall_duration = overall_end_time - overall_start_time
     
-    print(f"Video processing completed in {overall_duration:.2f} seconds")
-    print("Done")
+    # print(f"Video processing completed in {overall_duration:.2f} seconds")
+    # print("Done")
 
 # def return_frame_list():
 #     frame_list, pred_dict, out_file = create_frames()

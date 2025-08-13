@@ -48,7 +48,7 @@ if __name__ == '__main__':
     total_length = frame_count / fps2 if fps2 > 0 else 0
     cap_info.release()
 
-    clip_duration = 20  # 提高段长，减少I/O开销
+    clip_duration = 10*2  # 提高段长，减少I/O开销
     num_clips = int(total_length // clip_duration)
 
     remainder = total_length - num_clips*clip_duration
