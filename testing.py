@@ -21,8 +21,6 @@ def create_frames():
         #         out_file2+=i
         # out_file = out_file2
         video_name = pickle.load(file)
-        print("pred_dict is predicted.bin in crete_frames() is ",pred_dict)
-        print(out_file)
     # print(pred_dict)
     frame_list, fps, (w, h) = generate_frames(video_name)
     # print(pred_dict, len(pred_dict), "pred_dict")
@@ -37,7 +35,6 @@ def testing():
     overall_start_time = time.time()
     
     frame_list, pred_dict, out_file = create_frames()
-    print("legth of fl , pd , of is ",len(frame_list),len(pred_dict),len(out_file))
     print(pred_dict)
     # print("frame_list[0] is ",frame_list[0].shape[1])
     # print("Length of frame_list[0]" , len(frame_list[0]))
@@ -98,12 +95,8 @@ def testing():
 
         # Process each frame
         for i, frame in enumerate(frame_list):
-            if i % 100 == 0:
-                print(f"Processing frame {i}/{len(frame_list)}")
-                
             if(i in active_frame):
                 scores = clip_start(frame_in_csv[active_frame.index(i)], i, save_file, scores, pointers_to_players, first_serve)
-                print("scores", scores)
                 if(set_scores["p1"]==1 and set_scores["p2"]==1):
                     if(scores["p1"]==11 or scores["p2"]==11):
                         pointers_to_players["closer"], pointers_to_players["farther"] = pointers_to_players["farther"], pointers_to_players["closer"]
@@ -120,7 +113,6 @@ def testing():
 
             # Ensure frame is valid
             if frame is None or frame.size == 0:
-                print(f"Warning: Invalid frame at index {i}, skipping")
                 continue
 
             score_text_p1 = f"Player 1: {scores['p1']}"
