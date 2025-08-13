@@ -4,6 +4,8 @@ from utils.general import *
 import pickle
 import sys
 from utils.func_clips_start_end import *
+import cv2
+import numpy as np
 # from join_clips import *
 
 # sys.path.append('/Users/vishruthvijay/Documents/Summer-Project-Badminton/Combined-files/utils')
@@ -75,7 +77,8 @@ def testing():
     frame_list, fps, (w, h) = generate_frames(save_file)
     # print("save file, " ,save_file)
 
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # Codec for MP4 format
+    # 优化1: 使用更高效的编码器
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # 直接使用mp4v，避免H264初始化失败
     temp_output_path = f"{out_file[:-4]}_score_clip.mp4"
     out = None
     
@@ -83,8 +86,8 @@ def testing():
         # print(f"Creating output video at: {temp_output_path}")
         # print(f"Video dimensions: {frame_width}x{frame_height}")
         
-        # Create VideoWriter with proper parameters
-        out = cv2.VideoWriter(temp_output_path, fourcc, 30, (frame_width, frame_height))
+        # 优化2: 创建VideoWriter时使用更高效的参数
+        out = cv2.VideoWriter(temp_output_path, fourcc, 30, (frame_width, frame_height), isColor=True)
         
         if not out.isOpened():
             raise Exception(f"Could not open VideoWriter for {temp_output_path}")
@@ -93,8 +96,43 @@ def testing():
         # print("active frame is ", active_frame)
         # print(f"Total frames to process: {len(frame_list)}")
 
+        # 优化3: 预计算文本位置和样式，避免重复计算
+        score_text_p1 = f"Player 1: {scores['p1']}"
+        score_text_p2 = f"Player 2: {scores['p2']}"
+        text_size, _ = cv2.getTextSize(score_text_p1, cv2.FONT_HERSHEY_SIMPLEX, 1, 2)
+        text_width = text_size[0]
+        text_height = text_size[1]
+        padding = 10
+        top_right_p1 = (frame_width - text_width - padding, text_height + padding)
+        top_right_p2 = (frame_width - text_width - padding, 2 * text_height + 2 * padding)
+        
+        # 优化4: 创建帧副本，避免修改原始帧
+        frame_copy = None
+        
+        # 优化7: 初始化prev_scores变量
+        prev_scores = {'p1': -1, 'p2': -1}
+        
+        # 优化8: 添加进度显示
+        total_frames = len(frame_list)
+        progress_interval = max(1, total_frames // 20)  # 每5%显示一次进度
+        
+        # 优化9: 预分配内存，减少动态分配
+        frame_copy = np.empty((frame_height, frame_width, 3), dtype=np.uint8)
+        
+        # 优化10: 缓存字体参数，避免重复调用
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 1
+        font_thickness = 2
+        font_color = (0, 0, 255)
+        font_line_type = cv2.LINE_AA
+
         # Process each frame
         for i, frame in enumerate(frame_list):
+            # 显示进度
+            if i % progress_interval == 0:
+                progress = (i / total_frames) * 100
+                print(f"Processing video: {progress:.1f}% ({i}/{total_frames})")
+            
             if(i in active_frame):
                 scores = clip_start(frame_in_csv[active_frame.index(i)], i, save_file, scores, pointers_to_players, first_serve)
                 if(set_scores["p1"]==1 and set_scores["p2"]==1):
@@ -115,27 +153,30 @@ def testing():
             if frame is None or frame.size == 0:
                 continue
 
-            score_text_p1 = f"Player 1: {scores['p1']}"
-            score_text_p2 = f"Player 2: {scores['p2']}"
-            text_size, _ = cv2.getTextSize(score_text_p1, cv2.FONT_HERSHEY_SIMPLEX, 1, 2)
-            text_width = text_size[0]
-            text_height = text_size[1]
+            # 优化5: 只在分数变化时重新计算文本
+            if i == 0 or scores['p1'] != prev_scores.get('p1', -1) or scores['p2'] != prev_scores.get('p2', -1):
+                score_text_p1 = f"Player 1: {scores['p1']}"
+                score_text_p2 = f"Player 2: {scores['p2']}"
+                text_size, _ = cv2.getTextSize(score_text_p1, font, font_scale, font_thickness)
+                text_width = text_size[0]
+                text_height = text_size[1]
+                top_right_p1 = (frame_width - text_width - padding, text_height + padding)
+                top_right_p2 = (frame_width - text_width - padding, 2 * text_height + 2 * padding)
+                prev_scores = {'p1': scores['p1'], 'p2': scores['p2']}
 
-            # Position to place the text (top right corner with padding)
-            padding = 10
-            top_right_p1 = (frame.shape[1] - text_width - padding, text_height + padding)
-            top_right_p2 = (frame.shape[1] - text_width - padding, 2 * text_height + 2 * padding)
+            # 优化6: 使用预分配的帧副本，避免重复分配内存
+            np.copyto(frame_copy, frame)
 
             # Draw Player 1 score in red color
-            cv2.putText(frame, score_text_p1, top_right_p1, cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
+            cv2.putText(frame_copy, score_text_p1, top_right_p1, font, font_scale, font_color, font_thickness, font_line_type)
 
             # Draw Player 2 score in red color below Player 1 score
-            cv2.putText(frame, score_text_p2, top_right_p2, cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
+            cv2.putText(frame_copy, score_text_p2, top_right_p2, font, font_scale, font_color, font_thickness, font_line_type)
 
             # Write the modified frame to the output video file
-            out.write(frame)
+            out.write(frame_copy)
             
-        # print(f"Finished processing all {len(frame_list)} frames")
+        print(f"Finished processing all {total_frames} frames")
         
     except Exception as e:
         print(f"Error during video processing: {str(e)}")
@@ -152,8 +193,8 @@ def testing():
     overall_end_time = time.time()
     overall_duration = overall_end_time - overall_start_time
     
-    # print(f"Video processing completed in {overall_duration:.2f} seconds")
-    # print("Done")
+    print(f"Video processing completed in {overall_duration:.2f} seconds")
+    print("Done")
 
 # def return_frame_list():
 #     frame_list, pred_dict, out_file = create_frames()
