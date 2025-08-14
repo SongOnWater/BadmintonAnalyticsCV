@@ -6,6 +6,7 @@ import time
 import math
 import cv2
 import platform
+from typing import Optional
 
 import torch
 from torch.utils.data import DataLoader
@@ -207,7 +208,7 @@ def generate_inpaint_mask(pred_dict, th_h=30):
 # Datasets (top-level for Windows pickling)
 # ------------------------------
 class SimpleFramesDataset(torch.utils.data.Dataset):
-    def __init__(self, frames_chw_np: np.ndarray, seq_len: int, sliding_step: int, bg_mode: str = '', median_chw: np.ndarray | None = None):
+    def __init__(self, frames_chw_np: np.ndarray, seq_len: int, sliding_step: int, bg_mode: str = '', median_chw: Optional[np.ndarray] = None):
         self.frames = frames_chw_np  # (N,3,H,W) float32
         self.seq_len = seq_len
         self.sliding_step = sliding_step
@@ -364,7 +365,7 @@ def pred_main(frame_list, fps, w, h, tracknet_file = "ckpts/TrackNet_best.pt", i
             x = x.to(memory_format=torch.channels_last)
             with torch.inference_mode():
                 if amp_enabled:
-                    with torch.amp.autocast('cuda'):
+                    with torch.cuda.amp.autocast():
                         y_pred = tracknet(x)
                 else:
                     y_pred = tracknet(x)
@@ -415,7 +416,7 @@ def pred_main(frame_list, fps, w, h, tracknet_file = "ckpts/TrackNet_best.pt", i
             b_size, seq_len = i.shape[0], i.shape[1]
             with torch.inference_mode():
                 if amp_enabled:
-                    with torch.amp.autocast('cuda'):
+                    with torch.cuda.amp.autocast():
                         y_pred = tracknet(x)
                 else:
                     y_pred = tracknet(x)
@@ -460,7 +461,7 @@ def pred_main(frame_list, fps, w, h, tracknet_file = "ckpts/TrackNet_best.pt", i
     # Test on TrackNetV3 (TrackNet + InpaintNet)
     if inpaintnet is not None:
         seq_len = inpaintnet_seq_len
-        tracknet_pred_dict['Inpaint_Mask'] = generate_inpaint_mask(tracknet_pred_dict, th_h=h*0.05)
+        tracknet_pred_dict['Inpaint_Mask'] = generate_inpaint_mask(tracknet_pred_dict, th_h=h*00.5)
         inpaint_pred_dict = {'Frame':[], 'X':[], 'Y':[], 'Visibility':[]}
 
         if eval_mode == 'nonoverlap':
