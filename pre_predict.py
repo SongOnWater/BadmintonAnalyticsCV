@@ -6,13 +6,20 @@ import os
 import argparse
 import pickle
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--video_file', type=str, help='file path of the video')
-    parser.add_argument('--save_dir', default = 'prediction', type = str)
-    args = parser.parse_args()
-    save_dir = args.save_dir
-    video_name = os.path.splitext(os.path.basename(args.video_file))[0]
+def main(video_file=None, save_dir='prediction', eval_mode='nonoverlap'):
+    """Main function for video prediction"""
+    if video_file is None:
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--video_file', type=str, help='file path of the video')
+        parser.add_argument('--save_dir', default='prediction', type=str)
+        parser.add_argument('--eval_mode', choices=['nonoverlap', 'weight'], default='nonoverlap',
+                            help='预测模式：nonoverlap(快速) 或 weight(高精度)')
+        args = parser.parse_args()
+        video_file = args.video_file
+        save_dir = args.save_dir
+        eval_mode = args.eval_mode
+    
+    video_name = os.path.splitext(os.path.basename(video_file))[0]
     out_csv_file = os.path.join(save_dir, f'{video_name}_ball.csv')
     out_video_file = os.path.join(save_dir, f'{video_name}.mp4')
 
@@ -21,8 +28,8 @@ if __name__ == '__main__':
         os.makedirs(save_dir)
 
     # Handle FPS conversion if needed
-    video_file_to_process = args.video_file
-    cap = cv2.VideoCapture(args.video_file)
+    video_file_to_process = video_file
+    cap = cv2.VideoCapture(video_file)
     try:
         fps = cap.get(cv2.CAP_PROP_FPS)
         print(f"Original video FPS: {fps}")
@@ -36,7 +43,7 @@ if __name__ == '__main__':
     force_convert_to_30fps = False
     if force_convert_to_30fps and abs(fps - 30.0) > 0.1:
         print("Converting video to 30 FPS...")
-        video_file_to_process = change_fps(args.video_file)
+        video_file_to_process = change_fps(video_file)
 
     
     # predicting in batches to not use too much memory
@@ -48,7 +55,7 @@ if __name__ == '__main__':
     total_length = frame_count / fps2 if fps2 > 0 else 0
     cap_info.release()
 
-    clip_duration = 10*2  # 提高段长，减少I/O开销
+    clip_duration = 60  # 大幅提高段长，减少I/O开销和模型加载次数
     num_clips = int(total_length // clip_duration)
 
     remainder = total_length - num_clips*clip_duration
@@ -76,28 +83,41 @@ if __name__ == '__main__':
         end_time = min((i+1) * clip_duration, total_length)
         print(f"  Segment time: {start_time:.1f}s to {end_time:.1f}s" + (" (last segment)" if i==num_clips-1 else ""))
 
-        # 无重编码：直接按时间定位读取帧
-        # 使用 MoviePy 仅定位时间边界，再用 OpenCV 按帧抓取，避免写回磁盘
+        # 优化视频读取：使用帧号定位更精确
         cap = cv2.VideoCapture(video_file_to_process)
-        cap.set(cv2.CAP_PROP_POS_MSEC, start_time * 1000)
-        frame_list = []
-        grabbed = True
         w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         fps_cap = cap.get(cv2.CAP_PROP_FPS) or fps
-        while grabbed:
+        
+        # 计算起始和结束帧号
+        start_frame = int(start_time * fps_cap)
+        end_frame = int(end_time * fps_cap)
+        
+        # 直接定位到起始帧
+        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+        
+        frame_list = []
+        current_frame = start_frame
+        
+        # 预分配列表大小以提高性能
+        expected_frames = end_frame - start_frame
+        frame_list = [None] * expected_frames
+        frame_idx = 0
+        
+        while current_frame < end_frame and frame_idx < expected_frames:
             grabbed, frame = cap.read()
             if not grabbed:
                 break
-            # 通过帧时间过滤到 end_time
-            msec = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
-            if msec > end_time + 1e-3:
-                break
-            frame_list.append(frame)
+            frame_list[frame_idx] = frame
+            frame_idx += 1
+            current_frame += 1
+        
+        # 移除未使用的预分配空间
+        frame_list = frame_list[:frame_idx]
         cap.release()
 
-        # 推理
-        pred_dict = pred_main(frame_list=frame_list, fps=int(round(fps_cap)), w=w, h=h)
+        # 推理 - 使用指定的eval_mode
+        pred_dict = pred_main(frame_list=frame_list, fps=int(round(fps_cap)), w=w, h=h, batch_size=64, eval_mode=eval_mode)
 
         # Record segment end time and calculate duration
         segment_end_time = time.time()
@@ -131,10 +151,10 @@ if __name__ == '__main__':
     with open(f'predicted.bin','wb') as file:
         pickle.dump(pred_dict_joined, file)
         pickle.dump(out_video_file, file)
-        pickle.dump(args.video_file, file)
+        pickle.dump(video_file, file)
     
     # Clean up temporary files
-    if video_file_to_process != args.video_file:
+    if video_file_to_process != video_file:
         try:
             os.remove(video_file_to_process)
             print(f"Removed temporary file: {video_file_to_process}")
@@ -144,3 +164,9 @@ if __name__ == '__main__':
     print(f"\nVideo processing completed successfully!")
     print(f"Total processing time: {overall_duration:.2f} seconds")
     print(f"Average time per segment: {overall_duration/num_clips:.2f} seconds")
+    
+    return pred_dict_joined, out_csv_file, out_video_file
+
+
+if __name__ == '__main__':
+    main()

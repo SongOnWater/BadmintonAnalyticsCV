@@ -14,7 +14,6 @@ from torch.utils.data import DataLoader
 from dataset import Shuttlecock_Trajectory_Dataset, Video_IterableDataset
 from utils.general import *
 # Note: Avoid top-level MoviePy import to reduce dependency surface
-# from testing_3 import testing
 
 import pickle
 
@@ -60,10 +59,16 @@ def predict(indices, y_pred=None, c_pred=None, img_scaler=(1, 1)):
                 Format: {'Frame':[], 'X':[], 'Y':[], 'Visibility':[]}
     """
 
-    pred_dict = {'Frame':[], 'X':[], 'Y':[], 'Visibility':[]}
-
     batch_size, seq_len = indices.shape[0], indices.shape[1]
-    indices = indices.detach().cpu().numpy()if torch.is_tensor(indices) else indices.numpy()
+    indices = indices.detach().cpu().numpy() if torch.is_tensor(indices) else indices.numpy()
+    
+    # Pre-allocate arrays for better performance
+    max_predictions = batch_size * seq_len
+    frames = np.zeros(max_predictions, dtype=np.int32)
+    x_coords = np.zeros(max_predictions, dtype=np.int32)
+    y_coords = np.zeros(max_predictions, dtype=np.int32)
+    visibilities = np.zeros(max_predictions, dtype=np.int32)
+    pred_count = 0
     
     # Transform input for heatmap prediction
     if y_pred is not None:
@@ -94,14 +99,22 @@ def predict(indices, y_pred=None, c_pred=None, img_scaler=(1, 1)):
                 else:
                     raise ValueError('Invalid input')
                 vis_pred = 0 if cx_pred == 0 and cy_pred == 0 else 1
-                pred_dict['Frame'].append(int(f_i))
-                pred_dict['X'].append(cx_pred)
-                pred_dict['Y'].append(cy_pred)
-                pred_dict['Visibility'].append(vis_pred)
+                frames[pred_count] = int(f_i)
+                x_coords[pred_count] = cx_pred
+                y_coords[pred_count] = cy_pred
+                visibilities[pred_count] = vis_pred
+                pred_count += 1
                 prev_f_i = f_i
             else:
                 break
-     
+    
+    # Convert to final format, trimming unused space
+    pred_dict = {
+        'Frame': frames[:pred_count].tolist(),
+        'X': x_coords[:pred_count].tolist(),
+        'Y': y_coords[:pred_count].tolist(),
+        'Visibility': visibilities[:pred_count].tolist()
+    }
     return pred_dict    
 
 
@@ -270,29 +283,32 @@ class FramesWindowIterableDataset(torch.utils.data.IterableDataset):
             yield torch.from_numpy(data_idx), torch.from_numpy(x)
 
 
-def pred_main(frame_list, fps, w, h, tracknet_file = "ckpts/TrackNet_best.pt", inpaintnet_file = None, batch_size = 1, eval_mode = "weight", output_video = True, traj_len = 8, large_video = False):
+def pred_main(frame_list, fps, w, h, tracknet_file = "ckpts/TrackNet_best.pt", inpaintnet_file = None, batch_size = None, eval_mode = "weight", output_video = True, traj_len = 8, large_video = False, use_optimized_pipeline = True):
 
     # Record start time
     start_time = time.time()
     
-    # Perf knobs
-    device = _get_device()
-    torch.backends.cudnn.benchmark = True
-    if torch.cuda.is_available():
-        try:
-            torch.backends.cuda.matmul.allow_tf32 = True
-        except Exception:
-            pass
-
-    cpu_count = os.cpu_count() or 4
-    # Windows 避免 DataLoader 进程复制大量帧导致首批卡顿
-    if platform.system() == 'Windows':
-        num_workers = 0
-    else:
-        num_workers = min(max(1, cpu_count - 1), 8)
-    # Heuristic batch size if not provided or too small
-    if batch_size is None or batch_size <= 1:
-        batch_size = 8 if device.type == 'cuda' else 2
+    # Import and setup performance configuration
+    from performance_config import perf_config
+    from memory_utils import MemoryMonitor, clear_memory
+    
+    perf_config.setup_torch_optimizations()
+    perf_config.print_config()
+    
+    device = perf_config.device
+    
+    # Clear memory before starting
+    clear_memory()
+    
+    # 移除复杂的优化管道，使用简单有效的标准管道
+    
+    # Use provided batch size or optimized default
+    if batch_size is None:
+        batch_size = perf_config.batch_size
+    
+    print(f"Using batch_size: {batch_size} (requested: {batch_size}, config: {perf_config.batch_size})")
+    
+    num_workers = perf_config.num_workers
     # out_csv_file = os.path.join(save_dir, f'{video_name}_ball.csv')
     # out_video_file_cap = os.path.join(save_dir, f'{video_name}.mp4')
 
@@ -329,12 +345,17 @@ def pred_main(frame_list, fps, w, h, tracknet_file = "ckpts/TrackNet_best.pt", i
     seq_len = tracknet_seq_len
 
     # Lazy preprocessing dataset moved to top-level class (Windows pickling safe)
-    # Build frames_chw once
+    # Build frames_chw once with optimized memory allocation
     frames_chw = np.empty((len(frame_list), 3, HEIGHT, WIDTH), dtype=np.float32)
+    
+    # Pre-allocate temporary arrays to avoid repeated allocation
+    temp_frame = np.empty((HEIGHT, WIDTH, 3), dtype=np.uint8)
+    
     for idx, f in enumerate(frame_list):
-        f = cv2.resize(f, (WIDTH, HEIGHT), interpolation=cv2.INTER_AREA)
-        f = cv2.cvtColor(f, cv2.COLOR_BGR2RGB)
-        frames_chw[idx] = np.transpose(f, (2, 0, 1)) / 255.0
+        # Use pre-allocated array and in-place operations
+        cv2.resize(f, (WIDTH, HEIGHT), dst=temp_frame, interpolation=cv2.INTER_AREA)
+        cv2.cvtColor(temp_frame, cv2.COLOR_BGR2RGB, dst=temp_frame)
+        frames_chw[idx] = np.transpose(temp_frame, (2, 0, 1)) / 255.0
 
     # Background median for concat
     median_chw = None
@@ -347,19 +368,14 @@ def pred_main(frame_list, fps, w, h, tracknet_file = "ckpts/TrackNet_best.pt", i
     if eval_mode == 'nonoverlap':
         # Create dataset with non-overlap sampling (lazy)
         dataset = SimpleFramesDataset(frames_chw, seq_len=seq_len, sliding_step=seq_len, bg_mode=bg_mode, median_chw=median_chw)
-        dl_kwargs = dict(
-            batch_size=batch_size,
-            shuffle=False,
-            num_workers=num_workers,
-            drop_last=False,
-            pin_memory=(device.type == 'cuda'),
-            persistent_workers=(num_workers > 0),
-        )
-        if num_workers > 0:
-            dl_kwargs['prefetch_factor'] = 2
+        dl_kwargs = perf_config.get_dataloader_config()
+        dl_kwargs['batch_size'] = batch_size  # Override with provided batch_size
         data_loader = DataLoader(dataset, **dl_kwargs)
 
         amp_enabled = (device.type == 'cuda')
+        # Pre-allocate result lists to avoid repeated extend operations
+        all_indices, all_predictions = [], []
+        
         for step, (i, x) in enumerate(tqdm(data_loader)):
             x = x.float().to(device, non_blocking=True)
             x = x.to(memory_format=torch.channels_last)
@@ -369,9 +385,12 @@ def pred_main(frame_list, fps, w, h, tracknet_file = "ckpts/TrackNet_best.pt", i
                         y_pred = tracknet(x)
                 else:
                     y_pred = tracknet(x)
-                y_pred = y_pred.detach().cpu()
-            
-            # Predict
+                # Keep on GPU for batch processing if possible
+                all_indices.append(i)
+                all_predictions.append(y_pred.detach().cpu())
+        
+        # Batch process predictions to reduce overhead
+        for i, y_pred in zip(all_indices, all_predictions):
             tmp_pred = predict(i, y_pred=y_pred, img_scaler=img_scaler)
             for key in tmp_pred.keys():
                 tracknet_pred_dict[key].extend(tmp_pred[key])
@@ -389,16 +408,8 @@ def pred_main(frame_list, fps, w, h, tracknet_file = "ckpts/TrackNet_best.pt", i
         else:
             # Sample all frames from video
             dataset = SimpleFramesDataset(frames_chw, seq_len=seq_len, sliding_step=1, bg_mode=bg_mode, median_chw=median_chw)
-            dl_kwargs = dict(
-                batch_size=batch_size,
-                shuffle=False,
-                num_workers=num_workers,
-                drop_last=False,
-                pin_memory=(device.type == 'cuda'),
-                persistent_workers=(num_workers > 0),
-            )
-            if num_workers > 0:
-                dl_kwargs['prefetch_factor'] = 2
+            dl_kwargs = perf_config.get_dataloader_config()
+            dl_kwargs['batch_size'] = batch_size  # Override with provided batch_size
             data_loader = DataLoader(dataset, **dl_kwargs)
             video_len = len(frame_list)
         
@@ -597,3 +608,6 @@ def pred_main(frame_list, fps, w, h, tracknet_file = "ckpts/TrackNet_best.pt", i
     print(f"Model prediction completed in {processing_time:.2f} seconds")
 
     return pred_dict
+
+
+# 移除了复杂的优化管道，专注于简单有效的优化

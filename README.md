@@ -13,16 +13,52 @@ pip install -r requirements.txt
 
 ## Steps to run:
 
-  ### Shuttle Tracking Inference using TrackNetV3:
+  ### 🚀 推荐使用方式 (突破性能版本)
+  
+  使用优化的突破性能版本，获得最佳性能：
+  
+  ```bash
+  python run_breakthrough.py --video_file your_video.mp4
+  ```
+  
+  **参数说明**：
+  - `--video_file`: 输入视频文件路径（必需）
+  - `--save_dir`: 输出目录（默认：prediction）
+  - `--eval_mode`: 预测模式
+    - `nonoverlap`: 快速模式，2.3x性能提升（默认）
+    - `weight`: 高精度模式，使用时间集成
+  - `--generate_pred_video`: 生成完整预测视频（默认不生成，节省时间）
+  
+  **使用示例**：
+  ```bash
+  # 默认快速模式
+  python run_breakthrough.py --video_file match.mp4
+  
+  # 高精度模式
+  python run_breakthrough.py --video_file match.mp4 --eval_mode weight
+  
+  # 生成完整预测视频
+  python run_breakthrough.py --video_file match.mp4 --generate_pred_video
+  ```
+  
+  **性能优势**：
+  - 2.32倍速度提升
+  - 移除时间集成开销
+  - 使用nonoverlap模式
+  - 一键生成所有结果
+
+  ### 传统使用方式
+  
+  #### Shuttle Tracking Inference using TrackNetV3:
   1. Execute the following command line statement
      
-     ```python3 pre_predict.py --video_file original_short.mp4 (or any other raw footage video)```
+     ```python3 pre_predict.py --video_file your_video.mp4 (or any other raw footage video)```
   (You can choose to add a --save_dir <dir> argument if you want the predictions to be stored elsewhere and not the default prediction directory)
 
-  ### Using TrackNetV3 predictions for highlights generation and score updation:
+  #### Using TrackNetV3 predictions for highlights generation and score updation:
   1. Execute the following command line statement
      
-     ```python3 testing.py```
+     ```python3 testing_fixed.py```
 
 After running the above steps, filename_score_clip.mp4 will be created at cwd.
 

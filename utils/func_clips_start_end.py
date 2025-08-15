@@ -9,8 +9,17 @@ import os
 import pandas as pd
 
 def get_video_dimensions(video_path):
-    # Open the video file
-    cap = cv2.VideoCapture(video_path)
+    # Open the video file with retry mechanism
+    cap = None
+    for attempt in range(3):
+        cap = cv2.VideoCapture(video_path)
+        if cap.isOpened():
+            break
+        if cap:
+            cap.release()
+        if attempt < 2:
+            import time
+            time.sleep(0.1)
     
     # Check if the video was successfully loaded
     if not cap.isOpened():
@@ -104,19 +113,46 @@ def clip_start(frame_in_csv, frame_in_mp4, path_to_mp4, scores, pointers_to_play
     if(frame_in_csv==None):
         score_updation_no_changes(path_to_mp4, scores)
         return scores
-    path_to_csv =read_csv_for_mp4(path_to_mp4)
+    
+    # 尝试从path_to_mp4推导CSV路径，如果失败则尝试在prediction目录中查找
+    import os
+    path_to_csv = read_csv_for_mp4(path_to_mp4)
+    if not os.path.exists(path_to_csv):
+        # 尝试在prediction目录中查找
+        video_basename = os.path.basename(path_to_mp4)
+        csv_name = video_basename.replace('.mp4', '_ball.csv')
+        path_to_csv = os.path.join('prediction', csv_name)
+        if not os.path.exists(path_to_csv):
+            print(f"Warning: CSV file not found at {path_to_csv}")
+            return scores
     # print("converted into csv")
     # start of clip
     # img_height, img_width = get_video_dimensions(path_to_mp4)
 
     mid_line_coord = return_middle_line(path_to_mp4)
-    # print("hello")
-    # print("t0")
-    cap = cv2.VideoCapture(path_to_mp4)
+    
+    # Initialize p1_side to avoid UnboundLocalError
+    p1_side = ""
+    
+    # Open video with retry mechanism
+    cap = None
+    for attempt in range(3):
+        cap = cv2.VideoCapture(path_to_mp4)
+        if cap.isOpened():
+            break
+        if cap:
+            cap.release()
+        print(f"Attempt {attempt + 1}: Error opening video file {path_to_mp4}")
+        if attempt < 2:
+            import time
+            time.sleep(0.1)
+    
+    if not cap or not cap.isOpened():
+        print(f"Failed to open video file after 3 attempts: {path_to_mp4}")
+        return scores
     # print("t1 ", frame_in_mp4)
     cap.set(cv2.CAP_PROP_POS_FRAMES, frame_in_mp4)
     while cap.isOpened():
-        # print("hello2")
         ret, frame = cap.read()
         if not ret:
             break
@@ -176,8 +212,6 @@ def clip_start(frame_in_csv, frame_in_mp4, path_to_mp4, scores, pointers_to_play
                 # print("f1")
                 list1 = tuple(csv_file.readline().strip().split(","))
                 list2 = tuple(csv_file.readline().strip().split(","))
-
-                # print("list1 = ",list1 , "\nlist2 = ",list2)
 
                 if list1[0]=='' or list2[0]=='':
                     if direction_determiner > 0:
@@ -253,44 +287,46 @@ def clip_start(frame_in_csv, frame_in_mp4, path_to_mp4, scores, pointers_to_play
                 
 
     
-    if(first_serve!=True):
-        if direction == "Right" and p1_side == "Right":
-            # assert p2_side == "Left"
-            scores[pointers_to_players["farther"]]+=1
-            
-        elif direction == "Left" and p1_side == "Right":
-            # assert p2_side == "Left"
-            scores[pointers_to_players["closer"]]+=1
-            
-        elif direction == "Right" and p1_side == "Left":
-            # assert p2_side == "Right"
-            scores[pointers_to_players["closer"]]+=1
-            
-        elif direction == "Left" and p1_side == "Left":
-            # assert p2_side == "Right"
-            scores[pointers_to_players["farther"]]+=1
-            
+    # Only process scoring if both direction and p1_side are determined
+    if direction and p1_side:
+        if(first_serve!=True):
+            if direction == "Right" and p1_side == "Right":
+                # assert p2_side == "Left"
+                scores[pointers_to_players["farther"]]+=1
+                
+            elif direction == "Left" and p1_side == "Right":
+                # assert p2_side == "Left"
+                scores[pointers_to_players["closer"]]+=1
+                
+            elif direction == "Right" and p1_side == "Left":
+                # assert p2_side == "Right"
+                scores[pointers_to_players["closer"]]+=1
+                
+            elif direction == "Left" and p1_side == "Left":
+                # assert p2_side == "Right"
+                scores[pointers_to_players["farther"]]+=1
+                
+            else:
+                pass
         else:
-            pass
-    else:
-        if direction == "Right" and p1_side == "Right":
-            # assert p2_side == "Left"
-            # scores[pointers_to_players["farther"]]+=1
-            pass
-        elif direction == "Left" and p1_side == "Right":
-            # assert p2_side == "Left"
-            # scores[pointers_to_players["closer"]]+=1
-            pass
-        elif direction == "Right" and p1_side == "Left":
-            # assert p2_side == "Right"
-            # scores[pointers_to_players["closer"]]+=1
-            pass
-        elif direction == "Left" and p1_side == "Left":
-            # assert p2_side == "Right"
-            # scores[pointers_to_players["farther"]]+=1
-            pass
-        else:
-            pass
+            if direction == "Right" and p1_side == "Right":
+                # assert p2_side == "Left"
+                # scores[pointers_to_players["farther"]]+=1
+                pass
+            elif direction == "Left" and p1_side == "Right":
+                # assert p2_side == "Left"
+                # scores[pointers_to_players["closer"]]+=1
+                pass
+            elif direction == "Right" and p1_side == "Left":
+                # assert p2_side == "Right"
+                # scores[pointers_to_players["closer"]]+=1
+                pass
+            elif direction == "Left" and p1_side == "Left":
+                # assert p2_side == "Right"
+                # scores[pointers_to_players["farther"]]+=1
+                pass
+            else:
+                pass
 
     return scores
     
