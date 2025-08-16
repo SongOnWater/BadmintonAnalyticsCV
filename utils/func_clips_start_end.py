@@ -246,7 +246,7 @@ def clip_start(frame_in_csv, frame_in_mp4, path_to_mp4, scores, pointers_to_play
                     print(f"Final Direction: {direction}")
                     break
 
-                print("DD", direction_determiner, end= " ")
+                #print("DD", direction_determiner, end= " ")
 
             # except ValueError:
             # # If a line read is incomplete or incorrect format, we break the loop
