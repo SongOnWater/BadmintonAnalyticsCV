@@ -106,7 +106,7 @@ def clip_start(frame_in_csv, frame_in_mp4, path_to_mp4, scores, pointers_to_play
         return scores
     path_to_csv =read_csv_for_mp4(path_to_mp4)
     # print("converted into csv")
-    print("clip starts here", frame_in_csv)
+    #print("clip starts here", frame_in_csv)
     # img_height, img_width = get_video_dimensions(path_to_mp4)
 
     mid_line_coord = return_middle_line(path_to_mp4)
@@ -205,7 +205,7 @@ def clip_start(frame_in_csv, frame_in_mp4, path_to_mp4, scores, pointers_to_play
 
                 y_diff = Y_2 - Y_1
                 x_diff = X_2 - X_1
-                print("Frame =",FrameNo_1,"  frame counter =  ", frame_counter)
+                #print("Frame =",FrameNo_1,"  frame counter =  ", frame_counter)
                 if(y_diff!=0):
                     y_diff_for_direction = y_diff
                 

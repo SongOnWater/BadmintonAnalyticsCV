@@ -99,7 +99,7 @@ def testing_optimized():
         return
 
     # 🔥 优化：使用更高效的帧修改算法
-    add_frame = pred_dict_modify_optimized(pred_dict, frame_list, video_config)
+    add_frame = pred_dict_modify(False, pred_dict, frame_list, video_config)
     
     first_serve = True
 
@@ -219,31 +219,154 @@ def pred_dict_modify_optimized(pred_dict, frame_list, video_config):
     y_pred = pred_dict['Y']
     vis_pred = pred_dict['Visibility']
     
-    add_frame = [False] * len(frame_list)
-    
-    # 🔥 优化：向量化操作替代循环
-    vis_array = np.array(vis_pred)
-    
-    # 简化的帧选择逻辑
-    for i in range(len(frame_list)):
-        if i < len(vis_pred):
-            # 基本可见性检查
-            if vis_pred[i] == 1:
-                add_frame[i] = True
+    add_frame = []
+    wait_counter = -1
+    disappearance = -1
+    disappearance_reason = 0
+
+    ''' FIRST ROUND '''
+    for i, frame in enumerate(frame_list):
+
+        skip_frame = 0
+        if (disappearance != 1):
+
+            # Height check. disappearance here simply denotes whether the shuttle disappeared because it was too high and out of frame. 0 - cut the video because of disappearance, 1 - do not cut the video, as it disappeared because of being too high
+            if (vis_pred[i] == 0) and (i > 0) and (vis_pred[i-1] == 1 and y_pred[i-1] > 0 and y_pred[i-1] < video_config['shape'][1]*0.2):
+                disappearance = 1
+
+            elif (vis_pred[i] == 0) and (i == 0):
+                disappearance = 1
+
+        # shuttle is visible
+        if (disappearance == 1) and (vis_pred[i] == 1):
+            disappearance = -1
+            wait_counter = -1
+
+        ''' 
+        check for stationary shuttle begins here
+        '''
+
+        if (i > 5) and disappearance != 1:
+            counter = 0
+            for k in range(15,0,-1):
+                if not (((x_pred[i] - 6) <= (x_pred[i-k]) <= (x_pred[i] + 6)) and ((y_pred[i] - 6) <= (y_pred[i-k]) <= (y_pred[i] + 6))) or vis_pred[i-k] == 0:
+
+                    counter += 1
             
-            # 简化的连续性检查
-            if i > 0 and i < len(vis_pred) - 1:
-                if vis_pred[i-1] == 1 or vis_pred[i+1] == 1:
-                    add_frame[i] = True
+            if (counter <= 10):
+                disappearance_reason = 1
+                skip_frame = 1
+
+        ''''''
+
+        # if shuttle doesn't reappear after disappearance due to height - due to non detection, just cut it out anyways
+        
+        if (disappearance == 1):
+            flag = 1
+            for k in range(75,0,-1):
+                if (vis_pred[i-k] != 0):
+                    flag = 0
+            
+            if (flag == 1):
+                disappearance = 0
+                skip_frame = 1
+
+        if (disappearance != 1):
+            if (vis_pred[i] == 0):
+                disappearance = 0
+
+        # if the shuttle goes missing but reappears within 8 frames        
+        if (wait_counter >= 0) and (vis_pred[i] == 1):
+            wait_counter = -1
+            disappearance = -1
+
+        if (wait_counter <= 0) and (skip_frame != 1):
+            if (disappearance == 0) and (disappearance_reason != 1):
+                disappearance = -1
+                disappearance_reason = 0
+                skip_frame = 1
+
+            if (disappearance == 0) and (disappearance_reason == 1):
+                skip_frame = 1
+                wait_counter = 0
+
+        if (skip_frame != 1):
+            disappearance_reason = 0
+            add_frame.append(True)
+        else:
+            add_frame.append(False)
+
+    ''' INITIAL SMOOTHENING '''
+
+    kernel = np.array([1.5,1.25,1,1,1,1,1,1,1.25,1.5], dtype=float)
+
+    # Perform convolution with padding to avoid boundary effects.
+    smoothed_data = np.convolve(add_frame, kernel, mode='same')
+
+    # A value greater than or equal to the window size indicates a patch of 1s.
+    add_frame = smoothed_data.tolist()
+
+    for i,e in enumerate(add_frame):
+        if e <= 5:
+            add_frame[i] = False
+        else:
+            add_frame[i] = True
+
+    ''' ROUND 1.5 '''
+    for i in range(len(frame_list)-1, -1, -1):
+        if (i > 0):
+            if (add_frame[i] == False and add_frame[i-1] == True):
+
+                for k in range(30):
+                    try:
+                        add_frame[i+k] = True
+                    except:
+                        continue     
+
+    ''' SECOND ROUND '''
+    for i, frame in enumerate(frame_list):
+
+        # eliminate random detections from between
+        
+        if (i < len(frame_list) - 70):
+
+            if (add_frame[i] == False and add_frame[i+1] == True):
+                flag = 0
+                for k in range(70):
+                    if (add_frame[i+k] == True):
+                        flag += 1
+            
+
+                if (flag <= 60):
+                    for k in range(70):
+                        add_frame[i+k] = False
+        
+        else:
+            try:
+                if (add_frame[i] == False and add_frame[i+1] == True and add_frame[-1] == False):
+                    flag = 0
+                    total_len = len(add_frame[i:])
+
+                    for k in add_frame[i:]:
+                        if (k == True):
+                            flag += 1
+                    
+                    if (flag <= total_len*0.9):
+                        add_frame[i:] = [False]*(total_len)
+
+            except:
+                pass
+
+    ''' THIRD ROUND - padding before and after clips '''
     
-    # 🔥 优化：使用numpy进行平滑操作
-    add_frame_array = np.array(add_frame, dtype=float)
-    kernel = np.array([1.5, 1.25, 1, 1, 1, 1, 1, 1, 1.25, 1.5], dtype=float)
-    smoothed = np.convolve(add_frame_array, kernel, mode='same')
-    
-    # 转换回布尔值
-    add_frame = (smoothed > 5).tolist()
-    
+    for i, frame in enumerate(frame_list):
+        if (i < len(frame_list) - 1):
+            if (add_frame[i] == False and add_frame[i+1] == True):
+
+                for k in range(30):
+                    if ((i - k) >= 0):
+                        add_frame[i-k] = True
+
     return add_frame
 
 def write_pred_video_optimized(frame_list, video_config, pred_dict, add_frame, traj_len=8, out_file=None):
@@ -304,10 +427,14 @@ def clip_start_optimized(frame_in_csv, frame_in_mp4, path_to_mp4, scores, pointe
     if frame_in_csv is None:
         return scores
     
-    # 简化的方向检测逻辑
-    # 这里可以根据实际需求进一步优化
-    
-    return scores
+    # 使用原始的clip_start函数来处理实际的得分逻辑
+    try:
+        updated_scores = clip_start(frame_in_csv, frame_in_mp4, path_to_mp4, scores, pointers_to_players, first_serve)
+        return updated_scores
+    except Exception as e:
+        print(f"Error in clip_start_optimized: {e}")
+        # 如果出错，返回原分数
+        return scores
 
 if __name__ == "__main__":
     testing_optimized()
