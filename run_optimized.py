@@ -524,12 +524,12 @@ def main():
             video_time = time.time() - video_start
             
             # 视频生成完成后，清理predicted.bin
-            if os.path.exists('predicted.bin'):
-                try:
-                    os.remove('predicted.bin')
-                    print("🧹 清理predicted.bin")
-                except:
-                    pass
+            # if os.path.exists('predicted.bin'):
+            #     try:
+            #         os.remove('predicted.bin')
+            #         print("🧹 清理predicted.bin")
+            #     except:
+            #         pass
         else:
             video_time = 0
             print(f"\n✅ 仅预测模式，跳过视频生成")

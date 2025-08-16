@@ -47,9 +47,10 @@ def generate_frames_optimized(video_file):
 def get_best_fourcc():
     """获取最佳的视频编码器"""
     # 按优先级尝试不同的编码器
+    # 优先使用mp4v编码器，因为它与MP4格式兼容性最好
     codecs_to_try = [
-        ('XVID', 'XVID'),  # 通常有最好的兼容性和压缩率
-        ('mp4v', 'mp4v'),  # 标准MP4编码器
+        ('mp4v', 'mp4v'),  # 标准MP4编码器，优先使用
+        ('XVID', 'XVID'),  # XVID编码器
         ('MJPG', 'MJPG'),  # Motion JPEG，兼容性好但文件较大
     ]
     
