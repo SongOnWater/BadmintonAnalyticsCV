@@ -139,9 +139,9 @@ def analyze_video_strategy(video_file):
     cap.release()
     
 
-    if total_length > 120:  # 2分钟以上
+    if total_length > 30:  # 30秒以上
         strategy = "segmentation"
-        segment_duration = 20  # 30秒分段是最优配置
+        segment_duration = 30  # 20秒分段是最优配置
         reason = f"中长视频({total_length/60:.1f}分钟)，使用30秒分段处理"
     else:
         strategy = "full_memory"
