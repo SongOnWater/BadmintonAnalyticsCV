@@ -72,6 +72,10 @@ def write_complete_pred_video(frame_list, video_config, pred_dict, save_file, tr
     out.release()
     print(f"完整预测视频已保存: {save_file}")
 
+
+
+# 击球检测功能已移至 utils/hit_detection.py
+
 def write_score_video_with_trajectory(frame_list, video_config, pred_dict, save_file, 
                                     frame_in_csv, active_frame, original_video_path, traj_len=8):
     """写入带轨迹的得分视频"""
@@ -109,19 +113,24 @@ def write_score_video_with_trajectory(frame_list, video_config, pred_dict, save_
     set_scores = {"p1": 0, "p2": 0}
     first_serve = True
     
-    # 文本参数
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = 1
-    font_thickness = 2
-    font_color = (0, 0, 255)
-    font_line_type = cv2.LINE_AA
-    padding = 10
-    
+    # 获取视频尺寸
     frame_width = video_config['shape'][0]
     frame_height = video_config['shape'][1]
     
+    # 使用击球分析器
+    print("使用击球分析器进行实时击球检测...")
+    
+    from utils.hit_detection import HitAnalyzer
+    hit_analyzer = HitAnalyzer(frame_height, frame_width)
+    
+    # 文本参数已移至 HitDisplayRenderer
+    
     # 创建轨迹队列
     pred_queue = deque()
+    
+    # 用于实时显示击球进度
+    current_hit_counts = {"p1": 0, "p2": 0}
+    hit_index = 0
     
     print(f"处理 {len(frame_list)} 帧的得分视频...")
     
@@ -135,6 +144,9 @@ def write_score_video_with_trajectory(frame_list, video_config, pred_dict, save_
             pred_queue.appendleft([x_pred[i], y_pred[i]])
         else:
             pred_queue.appendleft(None)
+        
+        # 使用击球分析器处理击球检测
+        hit_analyzer.process_frame(frame, pred_queue, i, x_pred, y_pred, vis_pred)
         
         # 检查是否是活动帧并更新分数
         if i in active_frame:
@@ -170,24 +182,8 @@ def write_score_video_with_trajectory(frame_list, video_config, pred_dict, save_
         # 绘制轨迹
         frame_copy = draw_traj(frame_copy, pred_queue, color='yellow')
         
-        # 绘制分数
-        score_text_p1 = f"Player 1: {scores['p1']}"
-        score_text_p2 = f"Player 2: {scores['p2']}"
-        
-        # 计算文本位置
-        text_size_p1, _ = cv2.getTextSize(score_text_p1, font, font_scale, font_thickness)
-        text_size_p2, _ = cv2.getTextSize(score_text_p2, font, font_scale, font_thickness)
-        max_width = max(text_size_p1[0], text_size_p2[0])
-        text_height = max(text_size_p1[1], text_size_p2[1])
-        
-        top_right_p1 = (frame_width - max_width - padding, text_height + padding)
-        top_right_p2 = (frame_width - max_width - padding, 2 * text_height + 2 * padding)
-        
-        # 绘制分数文本
-        cv2.putText(frame_copy, score_text_p1, top_right_p1, font, font_scale, 
-                   font_color, font_thickness, font_line_type)
-        cv2.putText(frame_copy, score_text_p2, top_right_p2, font, font_scale, 
-                   font_color, font_thickness, font_line_type)
+        # 使用击球分析器渲染击球数据和得分
+        frame_copy = hit_analyzer.render_frame_with_hit_data(frame_copy, scores)
         
         # 写入帧
         out.write(frame_copy)
@@ -199,6 +195,7 @@ def write_score_video_with_trajectory(frame_list, video_config, pred_dict, save_
     
     out.release()
     print(f"带轨迹的得分视频已保存: {temp_output_path}")
+    print(f"最终击球统计: P1={current_hit_counts['p1']}, P2={current_hit_counts['p2']}")
 
 def testing_fixed(generate_pred_video=False, original_video_file=None):
     """修复版本的测试函数
