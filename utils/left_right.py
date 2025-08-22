@@ -6,7 +6,8 @@ import math
 from PIL import Image
 from ultralytics import YOLO
 
-
+# 导入设备管理工具
+from .device_utils import safe_numpy_conversion
 
 model = YOLO("/workspace/BadmintonAnalyticsCV/ckpts/yolov8n.pt")
 
@@ -54,8 +55,14 @@ def get_bounding_boxes(frame, img_height, img_width):
         # Extract bounding box coordinates in x_center, y_center, width, height format
         try:
             bounding_boxes = results[0].boxes.xywh  # [x_center, y_center, width, height]
-            # Convert to numpy array
-            bounding_boxes = bounding_boxes.cpu().numpy()
+            # 使用安全的张量转换
+            bounding_boxes = safe_numpy_conversion(bounding_boxes)
+            
+            # 检查转换是否成功
+            if bounding_boxes is None:
+                print("Warning: Failed to convert bounding boxes to numpy arrays")
+                return np.empty((0, 4))
+                
         except Exception as e:
             print(f"Error extracting bounding boxes: {str(e)}")
             return np.empty((0, 4))

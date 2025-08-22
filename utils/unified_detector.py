@@ -1,17 +1,21 @@
 """
-统一检测器 - 使用YOLO-World一次检测多个目标
+统一检测器 - 同时检测羽毛球拍和羽毛球
+使用YOLO-World模型进行多目标检测
 """
 import cv2
 import numpy as np
 import torch
+from typing import Dict, List, Tuple, Optional
 import os
-from typing import List, Tuple, Optional, Dict
-from ultralytics import YOLOWorld
+from ultralytics import YOLO
+
+# 导入设备管理工具
+from .device_utils import safe_numpy_conversion
 
 class UnifiedDetector:
-    """统一检测器 - 一次检测羽毛球拍和羽毛球"""
+    """统一检测器 - 一次检测所有目标"""
     
-    def __init__(self, model_path: Optional[str] = None):
+    def __init__(self, model_path: str = None):
         """
         初始化统一检测器
         
@@ -31,15 +35,15 @@ class UnifiedDetector:
         try:
             # 初始化YOLO-World模型
             if model_path and os.path.exists(model_path):
-                self.model = YOLOWorld(model_path)
+                self.model = YOLO(model_path)
             else:
                 # 使用本地下载的最强YOLO-World模型
                 local_model_path = 'ckpts/yolov8x-worldv2.pt'
                 if os.path.exists(local_model_path):
-                    self.model = YOLOWorld(local_model_path)
+                    self.model = YOLO(local_model_path)
                 else:
                     # 备用方案：使用在线模型
-                    self.model = YOLOWorld('yolov8x-worldv2.pt')
+                    self.model = YOLO('yolov8x-worldv2.pt')
             
             # 确保模型在正确的设备上
             if self.device.type == 'cuda':
@@ -81,9 +85,15 @@ class UnifiedDetector:
             if results and len(results) > 0:
                 result = results[0]
                 if result.boxes is not None:
-                    boxes = result.boxes.xyxy.cpu().numpy()  # x1, y1, x2, y2
-                    confidences = result.boxes.conf.cpu().numpy()
-                    class_ids = result.boxes.cls.cpu().numpy()
+                    # 使用安全的张量转换
+                    boxes = safe_numpy_conversion(result.boxes.xyxy)
+                    confidences = safe_numpy_conversion(result.boxes.conf)
+                    class_ids = safe_numpy_conversion(result.boxes.cls)
+                    
+                    # 检查转换是否成功
+                    if boxes is None or confidences is None or class_ids is None:
+                        print("Warning: Failed to convert tensors to numpy arrays")
+                        return {'rackets': [], 'shuttlecocks': []}
                     
                     for box, conf, class_id in zip(boxes, confidences, class_ids):
                         detection = (*box, conf, class_id)

@@ -471,10 +471,12 @@ def pred_main(frame_list, fps, w, h, tracknet_file = "ckpts/TrackNet_best.pt", i
 
     # Test on TrackNetV3 (TrackNet + InpaintNet)
     if inpaintnet is not None:
+        print(f'start inpaintnet')
         seq_len = inpaintnet_seq_len
         tracknet_pred_dict['Inpaint_Mask'] = generate_inpaint_mask(tracknet_pred_dict, th_h=h*00.5)
         inpaint_pred_dict = {'Frame':[], 'X':[], 'Y':[], 'Visibility':[]}
 
+        print(f'eval_mode: {eval_mode}')
         if eval_mode == 'nonoverlap':
             # Create dataset with non-overlap sampling
             dataset = Shuttlecock_Trajectory_Dataset(seq_len=seq_len, sliding_step=seq_len, data_mode='coordinate', pred_dict=tracknet_pred_dict, padding=True)
@@ -489,6 +491,8 @@ def pred_main(frame_list, fps, w, h, tracknet_file = "ckpts/TrackNet_best.pt", i
             )
 
             amp_enabled = (device.type == 'cuda')
+            print(f' amp_enabled: {amp_enabled}')
+            print(f'Number of Shuttlecock_Trajectory_Dataset: {len(dataset)}')
             for step, (i, coor_pred, inpaint_mask) in enumerate(tqdm(data_loader)):
                 coor_pred = coor_pred.float().to(device, non_blocking=True)
                 inpaint_mask = inpaint_mask.float().to(device, non_blocking=True)
@@ -498,11 +502,18 @@ def pred_main(frame_list, fps, w, h, tracknet_file = "ckpts/TrackNet_best.pt", i
                             coor_inpaint = inpaintnet(coor_pred, inpaint_mask)
                     else:
                         coor_inpaint = inpaintnet(coor_pred, inpaint_mask)
-                    coor_inpaint = coor_inpaint.detach().cpu()
-                    coor_inpaint = coor_inpaint * inpaint_mask + coor_pred * (1-inpaint_mask) # replace predicted coordinates with inpainted coordinates
+                    # 确保所有张量都在同一设备上，然后转移到CPU
+                    coor_inpaint = coor_inpaint.detach()
+                    inpaint_mask_cpu = inpaint_mask.detach().cpu()
+                    coor_pred_cpu = coor_pred.detach().cpu()
+                    coor_inpaint_cpu = coor_inpaint.cpu()
+                    # 使用clone()来避免就地更新问题
+                    coor_inpaint = coor_inpaint_cpu.clone() * inpaint_mask_cpu + coor_pred_cpu.clone() * (1-inpaint_mask_cpu) # replace predicted coordinates with inpainted coordinates
                 
                 # Thresholding
                 th_mask = ((coor_inpaint[:, :, 0] < COOR_TH) & (coor_inpaint[:, :, 1] < COOR_TH))
+                # 使用clone()来避免就地更新问题
+                coor_inpaint = coor_inpaint.clone()
                 coor_inpaint[th_mask] = 0.
                 
                 # Predict
@@ -532,21 +543,31 @@ def pred_main(frame_list, fps, w, h, tracknet_file = "ckpts/TrackNet_best.pt", i
             coor_inpaint_buffer = torch.zeros((buffer_size, seq_len, 2), dtype=torch.float32)
             
             amp_enabled = (device.type == 'cuda')
+            print(f'amp_enabled: {amp_enabled}')
             for step, (i, coor_pred, inpaint_mask) in enumerate(tqdm(data_loader)):
                 coor_pred = coor_pred.float().to(device, non_blocking=True)
                 inpaint_mask = inpaint_mask.float().to(device, non_blocking=True)
                 b_size = i.shape[0]
                 with torch.inference_mode():
+                    print(f'with torch.inference_mode()')
                     if amp_enabled:
                         with torch.cuda.amp.autocast():
+                            print(f'with torch.cuda.amp.autocast()')
                             coor_inpaint = inpaintnet(coor_pred, inpaint_mask)
                     else:
                         coor_inpaint = inpaintnet(coor_pred, inpaint_mask)
-                    coor_inpaint = coor_inpaint.detach().cpu()
-                    coor_inpaint = coor_inpaint * inpaint_mask + coor_pred * (1-inpaint_mask)
+                    # 确保所有张量都在同一设备上，然后转移到CPU
+                    coor_inpaint = coor_inpaint.detach()
+                    inpaint_mask_cpu = inpaint_mask.detach().cpu()
+                    coor_pred_cpu = coor_pred.detach().cpu()
+                    coor_inpaint_cpu = coor_inpaint.cpu()
+                    # 使用clone()来避免就地更新问题
+                    coor_inpaint = coor_inpaint_cpu.clone() * inpaint_mask_cpu + coor_pred_cpu.clone() * (1-inpaint_mask_cpu)
                 
                 # Thresholding
                 th_mask = ((coor_inpaint[:, :, 0] < COOR_TH) & (coor_inpaint[:, :, 1] < COOR_TH))
+                # 使用clone()来避免就地更新问题
+                coor_inpaint = coor_inpaint.clone()
                 coor_inpaint[th_mask] = 0.
 
                 coor_inpaint_buffer = torch.cat((coor_inpaint_buffer, coor_inpaint), dim=0)
@@ -579,6 +600,8 @@ def pred_main(frame_list, fps, w, h, tracknet_file = "ckpts/TrackNet_best.pt", i
 
                 # Thresholding
                 th_mask = ((ensemble_coor_inpaint[:, :, 0] < COOR_TH) & (ensemble_coor_inpaint[:, :, 1] < COOR_TH))
+                # 使用clone()来避免就地更新问题
+                ensemble_coor_inpaint = ensemble_coor_inpaint.clone()
                 ensemble_coor_inpaint[th_mask] = 0.
 
                 # Predict

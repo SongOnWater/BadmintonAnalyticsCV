@@ -1,46 +1,36 @@
 """
-羽毛球检测器 - 使用YOLO-World开放词汇检测
+羽毛球检测模块
+使用YOLO模型检测羽毛球
 """
 import cv2
 import numpy as np
 import torch
 import os
 from typing import List, Tuple, Optional
-from ultralytics import YOLOWorld
+from ultralytics import YOLO
+
+# 导入设备管理工具
+from .device_utils import safe_numpy_conversion
 
 class ShuttlecockDetector:
     """羽毛球检测器"""
     
-    def __init__(self, model_path: Optional[str] = None):
+    def __init__(self, model_path: str = None):
         """
         初始化羽毛球检测器
         
         Args:
-            model_path: YOLO-World模型路径，如果为None则使用默认模型
+            model_path: YOLO模型路径，如果为None则使用默认模型
         """
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.shuttlecock_keywords = [
-            "badminton shuttlecock", 
-            "shuttlecock", 
-            "badminton birdie",
-            "birdie",
-            "羽毛球",
-            "羽毛球球",
-            "羽毛球毛球"
-        ]
         
         try:
-            # 初始化YOLO-World模型
+            # 初始化YOLO模型
             if model_path and os.path.exists(model_path):
-                self.model = YOLOWorld(model_path)
+                self.model = YOLO(model_path)
             else:
-                # 使用本地下载的最强YOLO-World模型
-                local_model_path = 'ckpts/yolov8x-worldv2.pt'
-                if os.path.exists(local_model_path):
-                    self.model = YOLOWorld(local_model_path)
-                else:
-                    # 备用方案：使用在线模型
-                    self.model = YOLOWorld('yolov8x-worldv2.pt')
+                # 使用默认的YOLO模型
+                self.model = YOLO('yolov8n.pt')
             
             # 确保模型在正确的设备上
             if self.device.type == 'cuda':
@@ -48,7 +38,7 @@ class ShuttlecockDetector:
             
             print(f"Shuttlecock detector initialized on {self.device}")
         except Exception as e:
-            print(f"Error initializing YOLO-World model for shuttlecock: {e}")
+            print(f"Error initializing YOLO model: {e}")
             self.model = None
     
     def detect_shuttlecocks(self, frame: np.ndarray, confidence_threshold: float = 0.3) -> List[Tuple]:
@@ -60,16 +50,13 @@ class ShuttlecockDetector:
             confidence_threshold: 置信度阈值
             
         Returns:
-            List[Tuple]: 检测到的羽毛球信息 [(x1, y1, x2, y2, confidence, class_id), ...]
+            List[Tuple]: 检测结果列表，每个元素为 (x1, y1, x2, y2, confidence, class_id)
         """
         if self.model is None:
             return []
         
         try:
-            # 使用YOLO-World进行检测，指定羽毛球关键词
-            self.model.set_classes(self.shuttlecock_keywords)
-            
-            # YOLO-World可以直接处理numpy数组
+            # 使用YOLO进行检测
             results = self.model.predict(
                 source=frame,
                 conf=confidence_threshold,
@@ -80,12 +67,19 @@ class ShuttlecockDetector:
             if results and len(results) > 0:
                 result = results[0]
                 if result.boxes is not None:
-                    boxes = result.boxes.xyxy.cpu().numpy()  # x1, y1, x2, y2
-                    confidences = result.boxes.conf.cpu().numpy()
-                    class_ids = result.boxes.cls.cpu().numpy()
+                    # 使用安全的张量转换
+                    boxes = safe_numpy_conversion(result.boxes.xyxy)
+                    confidences = safe_numpy_conversion(result.boxes.conf)
+                    class_ids = safe_numpy_conversion(result.boxes.cls)
+                    
+                    # 检查转换是否成功
+                    if boxes is None or confidences is None or class_ids is None:
+                        print("Warning: Failed to convert tensors to numpy arrays")
+                        return []
                     
                     for box, conf, class_id in zip(boxes, confidences, class_ids):
-                        shuttlecocks.append((*box, conf, class_id))
+                        detection = (*box, conf, class_id)
+                        shuttlecocks.append(detection)
             
             return shuttlecocks
             

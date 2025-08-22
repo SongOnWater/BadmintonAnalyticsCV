@@ -72,11 +72,17 @@ class ActionRecognition:
             # 获取图像特征
             image_features = self.model.get_image_features(**inputs)
             
+            # 确保图像特征在正确的设备上
+            image_features = image_features.to(self.device)
+            
             # 计算与击球动作的相似度
             hit_confidence = 0.0
             for action in self.hit_actions:
                 text_inputs = self.processor(text=action, return_tensors="pt", padding=True).to(self.device)
                 text_features = self.model.get_text_features(**text_inputs)
+                
+                # 确保文本特征在正确的设备上
+                text_features = text_features.to(self.device)
                 
                 # 计算相似度
                 similarity = torch.cosine_similarity(image_features, text_features).item()
@@ -145,6 +151,9 @@ class VisionLLMIntegration:
             with torch.no_grad():
                 outputs = self.model(**inputs)
                 image_features = outputs.image_embeds
+                
+                # 确保图像特征在正确的设备上
+                image_features = image_features.to(self.device)
             
             # 计算与击球提示词的相似度
             hit_scores = []
@@ -153,6 +162,9 @@ class VisionLLMIntegration:
                 with torch.no_grad():
                     text_outputs = self.model(**text_inputs)
                     text_features = text_outputs.text_embeds
+                    
+                    # 确保文本特征在正确的设备上
+                    text_features = text_features.to(self.device)
                 
                 # 计算余弦相似度
                 similarity = F.cosine_similarity(image_features, text_features, dim=-1)

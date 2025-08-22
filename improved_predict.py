@@ -48,7 +48,7 @@ def generate_frames_from_video(video_path: str) -> Tuple[List[np.ndarray], int, 
     cap.release()
     return frames, fps, (width, height)
 
-def enhanced_pred_main(video_path: str, model_path: str, output_dir: str = "output") -> Dict[str, Any]:
+def enhanced_pred_main(video_path: str, model_path: str, inpaint_net_path: str, output_dir: str = "output") -> Dict[str, Any]:
     """
     增强的预测主函数，复用原有羽毛球检测，添加羽毛球拍检测和击球识别
     """
@@ -75,6 +75,7 @@ def enhanced_pred_main(video_path: str, model_path: str, output_dir: str = "outp
         w=w,
         h=h,
         tracknet_file=model_path,
+        inpaintnet_file=inpaint_net_path,
         output_video=False  # 不生成视频，只获取预测结果
     )
     
@@ -439,12 +440,13 @@ def main():
     parser = argparse.ArgumentParser(description='优化的改进羽毛球预测和击球检测')
     parser.add_argument('--video', type=str, required=True, help='输入视频文件路径')
     parser.add_argument('--model', type=str, required=True, help='模型文件路径')
+    parser.add_argument('--inpaint_net', type=str, required=False, help='InpaintNet模型文件路径')
     parser.add_argument('--output', type=str, default='output', help='输出目录')
     
     args = parser.parse_args()
     
     try:
-        results = enhanced_pred_main(args.video, args.model, args.output)
+        results = enhanced_pred_main(args.video, args.model, args.inpaint_net, args.output)
         print("✅ 处理成功完成！")
         print(f"输出文件:")
         for key, path in results['output_files'].items():
